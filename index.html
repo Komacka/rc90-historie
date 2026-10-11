@@ -1920,7 +1920,8 @@ async function renderDetail(id) {
     <button id="csv" ${pts.length ? "" : "disabled"}>CSV</button>
   </div>
   <div class="title">${esc(r.name)}</div>
-  <div class="hint" style="margin-bottom:12px"><span class="dot" style="background:${esc(colorOf(r.user_id))}"></span>${esc(nameOf(r.user_id))}${r.car_name ? " · " + esc(r.car_name) : ""} · ${esc(dt(r.start_at))}${r.end_at ? " – " + esc(new Date(r.end_at).toLocaleTimeString("cs-CZ", { hour: "2-digit", minute: "2-digit" })) : ""} · ${esc(r.device || "")}</div>
+  <div class="hint" style="margin-bottom:12px"><span class="dot" style="background:${esc(colorOf(r.user_id))}"></span>${esc(nameOf(r.user_id))}<span id="hdrCar">${r.car_name ? " · " + esc(r.car_name) : ""}</span> · ${esc(dt(r.start_at))}${r.end_at ? " – " + esc(new Date(r.end_at).toLocaleTimeString("cs-CZ", { hour: "2-digit", minute: "2-digit" })) : ""} · ${esc(r.device || "")}</div>
+  <div id="carEdit"></div>
   <div class="tiles">
     ${tile("Celkový čas", hms(r.total_ms, true))}
     ${tile("Vzdálenost GPS", km(r.distance_m, 2) + " km")}
@@ -1948,6 +1949,46 @@ async function renderDetail(id) {
   $("#gpx").onclick = () => download(fileBase(r) + ".gpx", toGpx(r, pts), "application/gpx+xml");
   $("#csv").onclick = () => download(fileBase(r) + ".csv", toCsv(pts), "text/csv");
   drawMap(pts);
+  if (session && r.user_id === session.user_id) carEditor(r);
+}
+
+/** Zpětná změna auta u vlastní jízdy – propíše se do aplikace na všech zařízeních. */
+async function carEditor(r) {
+  const box = $("#carEdit");
+  if (!box) return;
+  let cars;
+  try { cars = await api("/rest/v1/cars?select=id,name,body,color,archived&user_id=eq." + encodeURIComponent(session.user_id) + "&order=name.asc"); }
+  catch (e) { return; }   // bez tabulky aut (rc90_cars.sql) se nenabízí
+  cars = (cars || []).filter((c) => !c.archived || c.id === r.car_id);
+  const opts = [`<option value="">— bez auta —</option>`].concat(cars.map((c) => `<option value="${esc(c.id)}" ${c.id === r.car_id ? "selected" : ""}>${esc(c.name)}</option>`));
+  if (r.car_id && !cars.some((c) => c.id === r.car_id)) opts.push(`<option value="${esc(r.car_id)}" selected>${esc(r.car_name || "auto")}</option>`);
+  box.innerHTML = `<div class="toolbar" style="margin-bottom:12px;align-items:center">
+    <span class="lbl">Auto jízdy</span>
+    <span id="carPrev" style="min-width:90px;display:inline-block"></span>
+    <select id="carSel">${opts.join("")}</select>
+    <button id="carSave" disabled>Uložit auto</button>
+    <span id="carMsg" class="muted"></span></div>`;
+  const prev = () => {
+    const c = cars.find((x) => x.id === $("#carSel").value);
+    const body = c ? c.body : ($("#carSel").value === r.car_id ? r.car_body : null);
+    const col = c ? c.color : r.car_color;
+    $("#carPrev").innerHTML = body ? carThumb(body, col, 50) : "";
+  };
+  prev();
+  $("#carSel").onchange = () => { $("#carSave").disabled = $("#carSel").value === (r.car_id || ""); prev(); };
+  $("#carSave").onclick = async () => {
+    const c = cars.find((x) => x.id === $("#carSel").value) || null;
+    const body = c ? { car_id: c.id, car_name: c.name, car_body: c.body, car_color: c.color }
+                   : { car_id: null, car_name: null, car_body: null, car_color: null };
+    $("#carSave").disabled = true; $("#carMsg").textContent = "Ukládám…";
+    try {
+      await api("/rest/v1/rallies?id=eq." + encodeURIComponent(r.id), { method: "PATCH", body: { ...body, updated_at: new Date().toISOString() }, headers: { Prefer: "return=minimal" } });
+      ralliesCache = null;
+      $("#carMsg").textContent = "Uloženo – v aplikaci se změna objeví po synchronizaci.";
+      Object.assign(r, body);
+      const h = $("#hdrCar"); if (h) h.textContent = r.car_name ? " · " + r.car_name : "";
+    } catch (e) { $("#carMsg").textContent = "Chyba: " + e.message; $("#carSave").disabled = false; }
+  };
 }
 const tile = (l, v) => `<div class="box tile"><div class="in"><div class="lbl">${esc(l)}</div><div class="v">${esc(v)}</div></div></div>`;
 
