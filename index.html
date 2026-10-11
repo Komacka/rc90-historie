@@ -9,6 +9,1395 @@
 <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+<script>window.RC90_TEX = 2048; window.RC90_SHADOW = 1024;</script>
+<script>
+/* 3D auta (stejný kód jako v aplikaci) */
+try {
+/* RC-90 3D auta – procedurální modely (three.js r160) */
+// ===== cars.js
+// RC-90 – 3D siluety aut (procedurální model + polep jako textura)
+const T = window.THREE;
+
+// ---------------------------------------------------------------- pomocné
+const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
+function curve(pts, s) {           // po částech – mix lineární a kosinové interpolace
+  if (s <= pts[0][0]) return pts[0][1];
+  for (let i = 1; i < pts.length; i++) {
+    const [s1, z1] = pts[i], [s0, z0] = pts[i - 1];
+    if (s <= s1) {
+      const t = (s - s0) / (s1 - s0);
+      const e = 0.55 * t + 0.45 * (1 - Math.cos(Math.PI * t)) / 2;
+      return z0 + (z1 - z0) * e;
+    }
+  }
+  return pts[pts.length - 1][1];
+}
+
+// ---------------------------------------------------------------- převod z metrů
+function normalize(c) {
+  if (!c.abs || c._n) return c;
+  const L = c.L, f = x => x / L;
+  c.belt = c.belt.map(([x, z]) => [f(x), z]);
+  for (const k of ['cowl', 'rf', 'rr', 'deck', 'c0', 'c1', 'seat', 'ws0', 'ws1', 'mirror']) if (c.cab[k] != null) c.cab[k] = f(c.cab[k]);
+  if (c.cab.side) c.cab.side = c.cab.side.map(([a, b]) => [f(a), f(b)]);
+  if (c.wing) { c.wing.s = f(c.wing.s); if (c.wing.lower) c.wing.lower.s = f(c.wing.lower.s); }
+  c.axF = c.ohF / L; c.axR = (c.ohF + c.WB) / L;
+  c.track = c.track || (c.tf + c.tr) / 2;
+  c.H = c.cab.roofH || c.H;
+  c._n = 1; return c;
+}
+
+// ---------------------------------------------------------------- tvar karoserie
+function makeShape(c) {
+  const L = c.L, hw = c.W / 2;
+  const gc0 = c.gc;
+  const belt = s => curve(c.belt, s);
+  const width = s => {
+    const u = 2 * s - 1;                      // -1 předek, +1 záď
+    const p = u < 0 ? c.pF : c.pR;
+    let w = Math.pow(Math.max(0, 1 - Math.pow(Math.abs(u), p)), 1 / p);
+    if (s < 0.35) w *= 1 - c.noseTaper * Math.pow(1 - s / 0.35, 2);
+    if (s > 0.75) w *= 1 - (c.tailTaper || 0) * Math.pow((s - 0.75) / 0.25, 2);
+    return hw * w;
+  };
+  const cab = c.cab;
+  const roof = s => {
+    const b = belt(s);
+    if (cab.open) {
+      if (s < cab.c0 || s > cab.c1) return b;
+      const r = 0.02;
+      const k = Math.min(clamp((s - cab.c0) / r, 0, 1), clamp((cab.c1 - s) / r, 0, 1));
+      return b - cab.tub * k;
+    }
+    if (s <= cab.cowl || s >= cab.deck) return b;
+    const crown = (z, s0, s1) => z + 0.012 * Math.sin(Math.PI * clamp((s - s0) / (s1 - s0), 0, 1));
+    if (s < cab.rf) {
+      const t = (s - cab.cowl) / (cab.rf - cab.cowl);
+      const e = t + (cab.wsBow || 0.10) * Math.sin(Math.PI * t);   // lehce vypouklé čelní sklo
+      return belt(cab.cowl) + (cab.roofH - belt(cab.cowl)) * clamp(e, 0, 1);
+    }
+    if (s <= cab.rr) return crown(cab.roofH, cab.rf, cab.rr);
+    const t = (s - cab.rr) / (cab.deck - cab.rr);
+    const e = t - (cab.rsBow || 0.08) * Math.sin(Math.PI * t);
+    return cab.roofH + (belt(cab.deck) - cab.roofH) * clamp(e, 0, 1);
+  };
+  // podběhy kol
+  const gcAt = s => {
+    let g = gc0;
+    for (const ax of [c.axF, c.axR]) {
+      const dx = (s - ax) * L, a = c.R + 0.075;
+      if (Math.abs(dx) < a) g = Math.max(g, gc0 + (2 * c.R + 0.045 - gc0) * Math.sqrt(1 - (dx / a) ** 2));
+    }
+    return g;
+  };
+  let bMax = 0; for (let i = 0; i <= 200; i++) bMax = Math.max(bMax, belt(i / 200));
+  const flare = (s, z) => {
+    if (!c.flare) return 0;
+    let k = 0;
+    for (const ax of [c.axF, c.axR]) { const dx = Math.abs((s - ax) * L), a = c.R + 0.26; if (dx < a) k = Math.max(k, 0.5 + 0.5 * Math.cos(Math.PI * dx / a)); }
+    return c.flare * k * clamp((2 * c.R + 0.16 - z) / 0.12, 0, 1);
+  };
+  return { L, hw, belt, width, roof, gcAt, gc0, bMax, flare, X: s => L / 2 - s * L };
+}
+
+function ring(sh, c, s) {
+  const w = Math.max(sh.width(s), 0.0005);
+  const g = sh.gcAt(s), b = sh.belt(s), r = sh.roof(s);
+  const pts = [];
+  const vSide = z => clamp(0.08 + 0.22 * (z - sh.gc0) / (sh.bMax - sh.gc0), 0.08, 0.30);
+  const push = (y, z, v) => pts.push([y, z, v]);
+  const rb = Math.min(0.07, (b - g) * 0.3, w * 0.5);
+  const rt = Math.min(Math.min(c.shoulder || 0.07, 0.045), (b - g) * 0.35, w * 0.45);
+  // A spodek
+  push(0, g, 0); push((w - rb) / 2, g, 0.02); push(w - rb, g, 0.04);
+  // B spodní hrana
+  for (let k = 1; k <= 3; k++) { const a = -Math.PI / 2 + k * Math.PI / 6; const z = g + rb + rb * Math.sin(a); push(w - rb + rb * Math.cos(a) + sh.flare(s, z), z, 0.04 + 0.04 * k / 3); }
+  // C bok (lehce vypouklý)
+  const z0 = g + rb, z1 = b - rt;
+  for (let k = 1; k <= 6; k++) { const t = k / 6, z = z0 + (z1 - z0) * t; push(w + (c.bulge || 0.012) * Math.sin(Math.PI * t) * (w / sh.hw) + sh.flare(s, z), z, vSide(z)); }
+  // D rameno
+  for (let k = 1; k <= 3; k++) { const a = k * Math.PI / 6; push(w - rt + rt * Math.cos(a), b - rt + rt * Math.sin(a), 0.30 + 0.06 * k / 3); }
+  // E boční okna / stěna kokpitu
+  const wb = w - rt;
+  const d = r >= b ? 1 : -1;
+  const rr = Math.min(0.065, Math.abs(r - b) * 0.45, wb * 0.3);
+  const wt = c.cab.open && r < b ? Math.max(wb - 0.07, 0) : wb * (1 - (1 - (c.tumble || 0.8)) * clamp(Math.abs(r - b) / 0.35, 0, 1));
+  for (let k = 1; k <= 3; k++) { const t = k / 3; push(wb + (wt - wb) * t, b + (r - d * rr - b) * t, 0.36 + 0.08 * t); }
+  // F horní hrana
+  for (let k = 1; k <= 3; k++) { const a = k * Math.PI / 6; push(wt - rr + rr * Math.cos(a), r - d * rr + d * rr * Math.sin(a), 0.44 + 0.03 * k / 3); }
+  // G střed střechy / kapoty (absolutní příčná souřadnice)
+  const yG = sh.hw * 0.9;
+  const y0 = Math.max(wt - rr, 0);
+  for (let k = 1; k <= 3; k++) { const y = y0 * (1 - k / 3); push(y, r, k === 3 ? 0.5 : clamp(0.5 - 0.03 * y / yG, 0.47, 0.5)); }
+  return pts;
+}
+
+function bodyGeometry(sh, c) {
+  const N = 240;
+  const ss = [];
+  for (let i = 0; i < N; i++) { const t = i / (N - 1); ss.push(0.45 * t + 0.55 * (1 - Math.cos(Math.PI * t)) / 2); }
+  const pos = [], uv = [], idx = [];
+  let M = 0;
+  for (const s of ss) {
+    const half = ring(sh, c, s);
+    const full = half.map(([y, z, v]) => [y, z, v]);
+    for (let k = half.length - 2; k >= 0; k--) { const [y, z, v] = half[k]; full.push([-y, z, 1 - v]); }
+    M = full.length;
+    const x = sh.X(s);
+    for (const [y, z, v] of full) { pos.push(x, z, y); uv.push(s, v); }
+  }
+  for (let i = 0; i < N - 1; i++) for (let j = 0; j < M - 1; j++) {
+    const a = i * M + j, b = (i + 1) * M + j, cc = (i + 1) * M + j + 1, d = i * M + j + 1;
+    idx.push(a, d, b, b, d, cc);
+  }
+  const g = new T.BufferGeometry();
+  g.setAttribute('position', new T.Float32BufferAttribute(pos, 3));
+  g.setAttribute('uv', new T.Float32BufferAttribute(uv, 2));
+  g.setIndex(idx);
+  g.computeVertexNormals();
+  const n = g.attributes.normal;
+  for (let i = 0; i < n.count; i++) if (!isFinite(n.getX(i)) || (n.getX(i) === 0 && n.getY(i) === 0 && n.getZ(i) === 0)) n.setXYZ(i, 0, 1, 0);
+  return g;
+}
+
+// ---------------------------------------------------------------- polep (textura)
+let TW = window.RC90_TEX || 4096, TH = TW / 2;
+function painter(c, sh, liv) {
+  const cv = document.createElement('canvas'); cv.width = TW; cv.height = TH;
+  const x = cv.getContext('2d');
+  const rc = document.createElement('canvas'); rc.width = 512; rc.height = 256;
+  const rx = rc.getContext('2d');
+  const base = () => x.setTransform(TW, 0, 0, -TH, 0, TH);   // souřadnice (s, v)
+  base(); rx.setTransform(512, 0, 0, -256, 0, 256);
+  const L = sh.L;
+  const kv = 0.22 / (sh.bMax - sh.gc0);   // v na metr na boku
+  const yG = sh.hw * 0.9, kt = 0.03 / yG; // v na metr nahoře
+  const vS = h => 0.08 + 0.22 * h;        // h = poměrná výška boku 0..1
+  const zH = z => (z - sh.gc0) / (sh.bMax - sh.gc0);
+  const P = {
+    c, sh, x,
+    h: zH,
+    fill(col) { x.fillStyle = col; x.fillRect(0, 0.04, 1, 0.92); },
+    // obdélník na obou bocích (s0..s1, výška h0..h1)
+    side(s0, s1, h0, h1, col) {
+      x.fillStyle = col;
+      x.fillRect(s0, vS(h0), s1 - s0, vS(h1) - vS(h0));
+      x.fillRect(s0, 1 - vS(h1), s1 - s0, vS(h1) - vS(h0));
+    },
+    // mnohoúhelník na obou bocích, body [s, h]
+    sidePoly(pts, col) {
+      x.fillStyle = col;
+      for (const m of [0, 1]) {
+        x.beginPath();
+        pts.forEach(([s, h], i) => { const v = m ? 1 - vS(h) : vS(h); i ? x.lineTo(s, v) : x.moveTo(s, v); });
+        x.closePath(); x.fill();
+      }
+    },
+    // horní plocha (kapota / střecha / víko): body [s, f], f = příčná poloha 0 střed .. 1 okraj středového pole
+    topPoly(pts, col) {
+      x.fillStyle = col;
+      for (const m of [0, 1]) {
+        x.beginPath();
+        pts.forEach(([s, f], i) => { const v = 0.5 + (m ? 1 : -1) * 0.03 * Math.min(f, 1); i ? x.lineTo(s, v) : x.moveTo(s, v); });
+        x.closePath(); x.fill();
+      }
+    },
+    topFull(s0, s1, col) { x.fillStyle = col; x.fillRect(s0, 0.30, s1 - s0, 0.40); },
+    // pruh přes ramena a horní plochu (f 0..1 střed, 1..2 = rameno)
+    topBand(s0, s1, f0, f1, col) { P.topPoly([[s0, f0], [s1, f0], [s1, f1], [s0, f1]], col); },
+    // text na bocích – výška a s v metrech, čitelný z obou stran
+    sideText(txt, sC, h, sizeM, col, opt = {}) {
+      for (const right of [false, true]) {
+        base();
+        const v0 = right ? 1 - vS(h) : vS(h);
+        // levý bok (z+): čteno směrem dozadu (−s), nahoru = +v
+        if (!right) x.transform(-1 / L, 0, 0, -kv, sC, v0);
+        else x.transform(1 / L, 0, 0, kv, sC, v0);
+        drawText(x, txt, sizeM, col, opt);
+      }
+      base();
+    },
+    // text nahoře, čitelný zepředu
+    topText(txt, sC, sizeM, col, opt = {}) {
+      base();
+      x.transform(0, kt, -1 / L, 0, sC, 0.5);
+      drawText(x, txt, sizeM, col, opt);
+      base();
+    },
+    // startovní číslo na dveřích
+    doorNumber(sC, h, num, opt = {}) {
+      const r = opt.r || 0.17;
+      for (const right of [false, true]) {
+        base();
+        const v0 = right ? 1 - vS(h) : vS(h);
+        if (!right) x.transform(-1 / L, 0, 0, -kv, sC, v0); else x.transform(1 / L, 0, 0, kv, sC, v0);
+        x.fillStyle = opt.bg || '#FFFFFF';
+        roundRect(x, -r * 1.1, -r, r * 2.2, r * 2, r * 0.25); x.fill();
+        if (opt.ring) { x.lineWidth = 0.025; x.strokeStyle = opt.ring; x.stroke(); }
+        drawText(x, String(liv.numberOverride || num), r * 1.35, opt.fg || '#111', { dy: r * 0.02 });
+      }
+      base();
+    },
+    roofNumber(sC, num, opt = {}) {
+      const r = opt.r || 0.22;
+      base();
+      x.transform(0, kt, -1 / L, 0, sC, 0.5);
+      x.fillStyle = opt.bg || '#FFFFFF';
+      x.beginPath(); x.arc(0, 0, r, 0, Math.PI * 2); x.fill();
+      if (opt.ring) { x.lineWidth = 0.03; x.strokeStyle = opt.ring; x.stroke(); }
+      drawText(x, String(liv.numberOverride || num), r * 1.15, opt.fg || '#111', { dy: r * 0.02 });
+      base();
+    },
+    topOval(sC, rw, rh, col, txt, tcol) {
+      base(); x.transform(0, kt, -1 / L, 0, sC, 0.5);
+      x.fillStyle = col; x.beginPath(); x.ellipse(0, 0, rw, rh, 0, 0, Math.PI * 2); x.fill();
+      x.lineWidth = 0.02; x.strokeStyle = '#fff'; x.stroke();
+      if (txt) drawText(x, txt, rh * 1.3, tcol || '#fff', { italic: 1 });
+      base();
+    },
+    sideOval(sC, h, rw, rh, col, txt, tcol) {
+      for (const right of [false, true]) {
+        base(); const v0 = right ? 1 - vS(h) : vS(h);
+        if (!right) x.transform(-1 / L, 0, 0, -kv, sC, v0); else x.transform(1 / L, 0, 0, kv, sC, v0);
+        x.fillStyle = col; x.beginPath(); x.ellipse(0, 0, rw, rh, 0, 0, Math.PI * 2); x.fill();
+        x.lineWidth = 0.015; x.strokeStyle = '#fff'; x.stroke();
+        if (txt) drawText(x, txt, rh * 1.25, tcol || '#fff', { italic: 1 });
+      }
+      base();
+    },
+    roughRect(s0, s1, v0, v1, val) { rx.fillStyle = `rgb(${val},${val},${val})`; rx.fillRect(s0, v0, s1 - s0, v1 - v0); rx.fillRect(s0, 1 - v1, s1 - s0, v1 - v0); },
+    matteTop(s0, s1) { P.roughRect(s0, s1, 0.30, 0.5, 215); },
+  };
+  // podklad
+  rx.fillStyle = 'rgb(95,95,95)'; rx.fillRect(0, 0, 1, 1);
+  x.fillStyle = liv.body; x.fillRect(0, 0, 1, 1);
+  liv.paint && liv.paint(P);
+  // spodek + podběhy tmavé
+  x.fillStyle = '#1b1c1f'; x.fillRect(0, 0, 1, 0.045); x.fillRect(0, 0.955, 1, 0.045);
+  paintGlass(P, liv);
+  liv.after && liv.after(P);
+  return { map: cv, rough: rc };
+}
+
+function roundRect(x, X, Y, w, h, r) {
+  x.beginPath(); x.moveTo(X + r, Y); x.arcTo(X + w, Y, X + w, Y + h, r); x.arcTo(X + w, Y + h, X, Y + h, r);
+  x.arcTo(X, Y + h, X, Y, r); x.arcTo(X, Y, X + w, Y, r); x.closePath();
+}
+function drawText(x, txt, sizeM, col, opt) {
+  x.save();
+  // canvas text: velikost v px → škálovat do metrů
+  const px = 200;
+  x.scale(sizeM / px, sizeM / px);
+  x.font = `${opt.weight || 700} ${px}px ${opt.font || "Barlow, 'Barlow Condensed', 'Arial Narrow', sans-serif"}`;
+  x.textAlign = opt.align || 'center'; x.textBaseline = 'middle';
+  if (opt.italic) x.transform(1, 0, -0.22, 1, 0, 0);
+  if (opt.stretch) x.scale(opt.stretch, 1);
+  const dy = (opt.dy || 0) * px / sizeM;
+  if (opt.stroke) { x.lineJoin = 'round'; x.lineWidth = opt.strokeW || 22; x.strokeStyle = opt.stroke; x.strokeText(txt, 0, dy + px * 0.06); }
+  x.fillStyle = col; x.fillText(txt, 0, dy + px * 0.06);
+  x.restore();
+}
+
+function paintGlass(P, liv) {
+  const { c, x } = P, cab = c.cab;
+  const glass = '#11161c';
+  const g = (s0, s1, v0, v1) => { x.fillStyle = glass; x.fillRect(s0, v0, s1 - s0, v1 - v0); x.fillRect(s0, 1 - v1, s1 - s0, v1 - v0); P.roughRect(s0, s1, v0, v1, 12); };
+  if (cab.open) {
+    // vnitřek kokpitu
+    x.fillStyle = '#2a2a2c'; x.fillRect(cab.c0, 0.36, cab.c1 - cab.c0, 0.28);
+    P.roughRect(cab.c0, cab.c1, 0.36, 0.5, 200);
+    return;
+  }
+  const trim = (s0, s1, v0, v1) => { x.fillStyle = '#17181a'; x.fillRect(s0, v0, s1 - s0, v1 - v0); x.fillRect(s0, 1 - v1, s1 - s0, v1 - v0); };
+  if (!liv.chromeTrim) for (const [s0, s1] of cab.side) trim(s0 - 0.006, s1 + 0.006, 0.362, 0.441);
+  for (const [s0, s1] of cab.side) g(s0, s1, 0.367, 0.436);
+  g(cab.cowl + 0.006, cab.rf - 0.004, 0.446, 0.5);
+  g(cab.rr + 0.006, cab.deck - 0.008, 0.446, 0.5);
+  // sluneční clona s nápisem
+  if (liv.sun) {
+    const s1 = cab.rf - 0.004, s0 = s1 - 0.028 * 4.4 / c.L;
+    x.fillStyle = liv.sun.bg; x.fillRect(s0, 0.446, s1 - s0, 0.108);
+    P.topText(liv.sun.text || 'RC-90', (s0 + s1) / 2, 0.085, liv.sun.fg, { weight: 700, stretch: 1.2 });
+  }
+}
+
+// ---------------------------------------------------------------- díly
+function mat(col, o = {}) {
+  return new T.MeshPhysicalMaterial(Object.assign({ color: col, roughness: 0.45, metalness: 0, clearcoat: 0.4, clearcoatRoughness: 0.2 }, o));
+}
+function frontX(sh, y, rear) {
+  y = Math.abs(y);
+  let lo = 0, hi = 0.5;
+  for (let i = 0; i < 40; i++) { const m = (lo + hi) / 2; if (sh.width(m) >= y) hi = m; else lo = m; }
+  const s0 = rear ? 1 - hi : hi;
+  if (rear) { lo = 0.5; hi = 1; for (let i = 0; i < 40; i++) { const m = (lo + hi) / 2; if (sh.width(m) >= y) lo = m; else hi = m; } return { x: sh.X(lo), s: lo }; }
+  return { x: sh.X(s0), s: s0 };
+}
+// plocha přiložená k čelu/zádi, sleduje půdorys (světla, maska)
+function faceStrip(sh, rear, ya, yb, z0, z1, off, material, round = 0.012) {
+  const n = 24, pts = [];
+  for (let i = 0; i <= n; i++) { const y = ya + (yb - ya) * i / n; pts.push([frontX(sh, y, rear).x, y]); }
+  const pos = [], idx = [];
+  const e = Math.min(round, (z1 - z0) / 3);
+  const prof = [[-0.03, z0], [off - 0.004, z0], [off, z0 + e], [off, z1 - e], [off - 0.004, z1], [-0.03, z1]];
+  const dir = rear ? -1 : 1;
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[Math.max(i - 1, 0)], b = pts[Math.min(i + 1, pts.length - 1)];
+    let tx = b[0] - a[0], ty = b[1] - a[1]; const l = Math.hypot(tx, ty) || 1; tx /= l; ty /= l;
+    let nx = ty, ny = -tx; if (nx * dir < 0) { nx = -nx; ny = -ny; }
+    const [px, py] = pts[i];
+    for (const [o, z] of prof) pos.push(px + nx * o, z, py + ny * o);
+  }
+  const m = prof.length;
+  for (let i = 0; i < pts.length - 1; i++) for (let j = 0; j < m - 1; j++) {
+    const A = i * m + j, B = (i + 1) * m + j, C = (i + 1) * m + j + 1, D = i * m + j + 1;
+    idx.push(A, B, D, B, C, D);
+  }
+  // čela (boky pásu)
+  for (const i of [0, pts.length - 1]) { const b0 = i * m; idx.push(b0, b0 + 1, b0 + 4, b0 + 1, b0 + 2, b0 + 4, b0 + 2, b0 + 3, b0 + 4, b0, b0 + 4, b0 + 5); }
+  const g = new T.BufferGeometry();
+  g.setAttribute('position', new T.Float32BufferAttribute(pos, 3)); g.setIndex(idx); g.computeVertexNormals();
+  const mesh = new T.Mesh(g, material); material.side = T.DoubleSide; return mesh;
+}
+// pás kolem čela/zádě (nárazník apod.) – sleduje půdorys
+function outlineStrip(sh, sMax, z0, z1, off, material, rear = false, depth = 0.06) {
+  const pts = [];
+  const n = 40;
+  for (let i = n; i >= 0; i--) { const s = sMax * i / n; pts.push([rear ? 1 - s : s, 1]); }
+  for (let i = 1; i <= n; i++) { const s = sMax * i / n; pts.push([rear ? 1 - s : s, -1]); }
+  const P2 = pts.map(([s, sg]) => [sh.X(s), sg * sh.width(s)]);
+  const pos = [], idx = [];
+  const prof = [[-depth, z0], [off, z0 + 0.012], [off, z1 - 0.012], [-depth, z1]];  // [offset, z]
+  for (let i = 0; i < P2.length; i++) {
+    const a = P2[Math.max(i - 1, 0)], b = P2[Math.min(i + 1, P2.length - 1)];
+    let tx = b[0] - a[0], ty = b[1] - a[1]; const l = Math.hypot(tx, ty) || 1; tx /= l; ty /= l;
+    let nx = ty, ny = -tx;                       // normála ven
+    const mid = P2[i];
+    if ((mid[0] * nx + mid[1] * ny) < 0) { nx = -nx; ny = -ny; }
+    for (const [o, z] of prof) pos.push(mid[0] + nx * o, z, mid[1] + ny * o);
+  }
+  const m = prof.length;
+  for (let i = 0; i < P2.length - 1; i++) for (let j = 0; j < m - 1; j++) {
+    const a = i * m + j, b = (i + 1) * m + j, cc = (i + 1) * m + j + 1, d = i * m + j + 1;
+    idx.push(a, b, d, b, cc, d);
+  }
+  const g = new T.BufferGeometry();
+  g.setAttribute('position', new T.Float32BufferAttribute(pos, 3)); g.setIndex(idx); g.computeVertexNormals();
+  const mesh = new T.Mesh(g, material); mesh.material.side = T.DoubleSide; return mesh;
+}
+function rbox(w, h, d, r, material) {   // zaoblený kvádr (jednoduše: box + malé zkosení přes segmenty)
+  const shape = new T.Shape();
+  const x = -w / 2, y = -h / 2;
+  r = Math.min(r, w / 2, h / 2);
+  shape.moveTo(x + r, y); shape.lineTo(x + w - r, y); shape.quadraticCurveTo(x + w, y, x + w, y + r);
+  shape.lineTo(x + w, y + h - r); shape.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  shape.lineTo(x + r, y + h); shape.quadraticCurveTo(x, y + h, x, y + h - r);
+  shape.lineTo(x, y + r); shape.quadraticCurveTo(x, y, x + r, y);
+  const g = new T.ExtrudeGeometry(shape, { depth: d, bevelEnabled: true, bevelThickness: Math.min(0.01, d / 3), bevelSize: Math.min(0.01, r), bevelSegments: 3, curveSegments: 6 });
+  g.translate(0, 0, -d / 2);
+  return new T.Mesh(g, material);
+}
+
+// lampa na čele (shape 'rect' | 'round' | 'quad' | 'round2')
+function lamp(group, sh, o, rear) {
+  const glow = rear ? 0xd0101a : 0xfff6d8;
+  const lens = mat(rear ? 0xb5121b : 0xdfe6ee, { emissive: glow, emissiveIntensity: rear ? 0.3 : 0.25, roughness: 0.08, metalness: 0.3, clearcoat: 1 });
+  const rim = mat(0x111111, { roughness: 0.5 });
+  const amberM = mat(0xf0a020, { emissive: 0xf09000, emissiveIntensity: 0.3, roughness: 0.1, clearcoat: 1 });
+  for (const sg of [1, -1]) {
+    const yc = sg * o.y;
+    const fx = frontX(sh, Math.abs(yc) + (o.shape === 'round' ? o.r : (o.w || 0.1) * 0.5) * 0.35, rear);
+    const dir = rear ? -1 : 1;
+    if (o.shape === 'round') {
+      const ring = new T.Mesh(new T.CylinderGeometry(o.r + 0.012, o.r + 0.012, 0.04, 28), rim);
+      ring.rotation.z = Math.PI / 2; ring.position.set(fx.x - dir * 0.012, o.z, yc); group.add(ring);
+      const l = new T.Mesh(new T.CylinderGeometry(o.r, o.r, 0.045, 28), lens);
+      l.rotation.z = Math.PI / 2; l.position.set(fx.x - dir * 0.006, o.z, yc); group.add(l);
+    } else {
+      const ya = sg * (o.y - o.w / 2), yb = sg * (o.y + o.w / 2);
+      group.add(faceStrip(sh, rear, ya - sg * 0.018, yb + sg * 0.018, o.z - o.h / 2 - 0.018, o.z + o.h / 2 + 0.018, 0.008, rim, 0.02));
+      group.add(faceStrip(sh, rear, ya, yb, o.z - o.h / 2, o.z + o.h / 2, 0.016, o.amber ? amberM : lens, Math.min(o.h, o.w) * (o.round ?? 0.2)));
+    }
+  }
+}
+
+function rimTexture(style, col) {
+  const cv = document.createElement('canvas'); cv.width = cv.height = 256;
+  const x = cv.getContext('2d');
+  x.translate(128, 128);
+  x.fillStyle = '#151515'; x.beginPath(); x.arc(0, 0, 128, 0, 7); x.fill();
+  x.fillStyle = col; x.beginPath(); x.arc(0, 0, 120, 0, 7); x.fill();
+  x.fillStyle = 'rgba(0,0,0,0.75)';
+  const n = style === 'star' ? 5 : style === 'multi' ? 8 : style === 'dish' ? 0 : 6;
+  if (style === 'mesh') {
+    x.fillStyle = 'rgba(0,0,0,0.78)'; x.beginPath(); x.arc(0, 0, 106, 0, 7); x.fill();
+    x.strokeStyle = col; x.lineWidth = 7;
+    for (let i = 0; i < 10; i++) { const a = i * Math.PI / 5; x.beginPath(); x.moveTo(Math.cos(a) * 30, Math.sin(a) * 30); x.lineTo(Math.cos(a + 0.55) * 106, Math.sin(a + 0.55) * 106); x.stroke(); x.beginPath(); x.moveTo(Math.cos(a) * 30, Math.sin(a) * 30); x.lineTo(Math.cos(a - 0.55) * 106, Math.sin(a - 0.55) * 106); x.stroke(); }
+    x.lineWidth = 5; x.beginPath(); x.arc(0, 0, 70, 0, 7); x.stroke();
+    x.fillStyle = 'rgba(255,255,255,0.0)';
+  } else if (style === 'dish') {
+    x.fillStyle = 'rgba(0,0,0,0.25)'; x.beginPath(); x.arc(0, 0, 100, 0, 7); x.fill();
+    for (let i = 0; i < 4; i++) { const a = i * Math.PI / 2 + 0.6; x.fillStyle = '#222'; x.beginPath(); x.ellipse(Math.cos(a) * 72, Math.sin(a) * 72, 18, 14, a, 0, 7); x.fill(); }
+  } else {
+    x.fillStyle = 'rgba(0,0,0,0.80)';
+    for (let i = 0; i < n; i++) {
+      const a = i * 2 * Math.PI / n + Math.PI / n;
+      x.save(); x.rotate(a);
+      if (n === 5) { x.beginPath(); x.moveTo(42, 0); x.quadraticCurveTo(70, -36, 104, -30); x.arc(0, 0, 104, -0.29, 0.29); x.quadraticCurveTo(70, 36, 42, 0); x.closePath(); x.fill(); }
+      else { x.beginPath(); x.moveTo(40, -7); x.lineTo(104, -18); x.arc(0, 0, 104, -0.17, 0.17); x.lineTo(40, 7); x.closePath(); x.fill(); }
+      x.restore();
+    }
+  }
+  x.fillStyle = 'rgba(255,255,255,0.18)'; x.beginPath(); x.arc(0, 0, 120, Math.PI * 1.1, Math.PI * 1.6); x.arc(0, 0, 112, Math.PI * 1.6, Math.PI * 1.1, true); x.fill();
+  x.fillStyle = '#333'; x.beginPath(); x.arc(0, 0, 30, 0, 7); x.fill();
+  x.fillStyle = col; x.beginPath(); x.arc(0, 0, 18, 0, 7); x.fill();
+  const t = new T.CanvasTexture(cv); t.colorSpace = T.SRGBColorSpace; t.anisotropy = 8; return t;
+}
+
+function wheel(c, liv) {
+  const g = new T.Group();
+  const R = c.R, tw = c.tyreW;
+  // pneumatika – lathe profil
+  const prof = [];
+  const rr = 0.045;
+  const rimR = R * 0.64;
+  prof.push(new T.Vector2(rimR, -tw / 2 + 0.01));
+  for (let k = 0; k <= 8; k++) { const a = Math.PI + k * Math.PI / 16; prof.push(new T.Vector2(R - rr + rr * Math.cos(a + Math.PI / 2 * 0) * 0 + (R - rr - (R - rr)) , 0)); }
+  prof.length = 1;
+  for (let k = 0; k <= 8; k++) { const a = -Math.PI / 2 + k * Math.PI / 16; prof.push(new T.Vector2(R - rr + rr * Math.cos(a), -tw / 2 + rr + rr * Math.sin(a))); }
+  for (let k = 0; k <= 8; k++) { const a = k * Math.PI / 16; prof.push(new T.Vector2(R - rr + rr * Math.cos(a), tw / 2 - rr + rr * Math.sin(a))); }
+  prof.push(new T.Vector2(rimR, tw / 2 - 0.01));
+  const tyre = new T.Mesh(new T.LatheGeometry(prof, 48), mat(0x1c1c1e, { roughness: 0.85, clearcoat: 0 }));
+  tyre.material.side = T.DoubleSide;
+  g.add(tyre);
+  const rimM = new T.MeshPhysicalMaterial({ map: rimTexture(liv.rimStyle || c.rimStyle || 'multi', liv.rim || '#c9ccd1'), roughness: 0.35, metalness: 0.4, clearcoat: 0.6 });
+  const disc = new T.Mesh(new T.CircleGeometry(rimR, 48), rimM);
+  disc.rotation.x = -Math.PI / 2; disc.position.y = tw / 2 - 0.015;
+  g.add(disc);
+  const disc2 = disc.clone(); disc2.rotation.x = Math.PI / 2; disc2.position.y = -tw / 2 + 0.015; g.add(disc2);
+  return g;  // osa = y
+}
+
+// ---------------------------------------------------------------- celé auto
+function buildCar(c, liv) {
+  normalize(c);
+  const sh = makeShape(c);
+  const grp = new T.Group();
+  const tex = painter(c, sh, liv);
+  const map = new T.CanvasTexture(tex.map); map.colorSpace = T.SRGBColorSpace; map.anisotropy = 16;
+  const rough = new T.CanvasTexture(tex.rough);
+  const bodyMat = new T.MeshPhysicalMaterial({ map, roughnessMap: rough, roughness: 1, metalness: liv.metal ? 0.35 : 0.05, clearcoat: 0.8, clearcoatRoughness: 0.12 });
+  const body = new T.Mesh(bodyGeometry(sh, c), bodyMat);
+  body.castShadow = true; body.receiveShadow = true;
+  grp.add(body);
+  // výplň podvozku (aby podběhy nebyly průhledné)
+  const ch = new T.Mesh(new T.BoxGeometry(c.L * 0.86, sh.bMax * 0.55, c.W - 2 * (c.tyreW + 0.09)), mat(0x141416, { roughness: 0.9, clearcoat: 0 }));
+  ch.position.set(0, c.gc + sh.bMax * 0.27, 0); grp.add(ch);
+  // kola
+  for (const ax of [c.axF, c.axR]) for (const sg of [1, -1]) {
+    const wv = wheel(c, liv);
+    wv.rotation.x = Math.PI / 2;
+    wv.position.set(sh.X(ax), c.R, sg * (c.track / 2));
+    wv.traverse(o => { if (o.isMesh) o.castShadow = true; });
+    grp.add(wv);
+  }
+  const dark = mat(0x1d1e21, { roughness: 0.6, clearcoat: 0.2 });
+  const chrome = mat(0xd8dade, { roughness: 0.12, metalness: 1, clearcoat: 1 });
+  const bodyCol = mat(liv.bumper || liv.body, { roughness: 0.35, clearcoat: 0.8 });
+  const bm = m => m === 'chrome' ? chrome : m === 'body' ? bodyCol : m === 'dark' ? dark : mat(m, { roughness: 0.4, clearcoat: 0.6 });
+  // nárazníky
+  for (const b of c.bumpers || []) grp.add(outlineStrip(sh, b.s, b.z0, b.z1, b.off || 0.04, bm(liv.bumperMat || b.m), b.rear, b.depth || 0.05));
+  // světla
+  for (const l of c.lights || []) lamp(grp, sh, l, false);
+  for (const l of c.tail || []) lamp(grp, sh, l, true);
+  // maska chladiče
+  if (c.grille) for (const gr of c.grille) {
+    grp.add(faceStrip(sh, false, gr.y - gr.w / 2, gr.y + gr.w / 2, gr.z - gr.h / 2, gr.z + gr.h / 2, gr.chrome ? 0.014 : 0.01, gr.chrome ? chrome : dark, gr.r || 0.015));
+    if (gr.chrome) grp.add(faceStrip(sh, false, gr.y - gr.w / 2 + 0.02, gr.y + gr.w / 2 - 0.02, gr.z - gr.h / 2 + 0.02, gr.z + gr.h / 2 - 0.02, 0.018, dark, 0.01));
+  }
+  // zrcátka
+  {
+    const s = c.cab.mirror || (c.cab.cowl || c.cab.c0) + 0.025;
+    const y = sh.width(s) + 0.07, z = sh.belt(s) + 0.07;
+    for (const sg of [1, -1]) {
+      const m = rbox(0.13, 0.085, 0.10, 0.03, liv.mirror === 'dark' ? dark : bodyCol);
+      m.position.set(sh.X(s), z, sg * y); grp.add(m);
+      const arm = new T.Mesh(new T.BoxGeometry(0.04, 0.03, 0.08), dark); arm.position.set(sh.X(s), z - 0.03, sg * (y - 0.07)); grp.add(arm);
+    }
+  }
+  // křídlo / spoiler
+  if (c.wing) {
+    const w = c.wing, s = w.s;
+    const z = sh.roof(s) + w.h;
+    const span = sh.width(s) * 2 * w.span;
+    const wingM = liv.wingCol ? mat(liv.wingCol, { roughness: 0.35, clearcoat: 0.8 }) : (w.mat === 'dark' ? dark : bodyCol);
+    const plate = rbox(w.chord, 0.035, span, 0.015, wingM);
+    plate.position.set(sh.X(s), z, 0); plate.rotation.z = w.tilt || 0.08; grp.add(plate);
+    for (const sg of [1, -1]) {
+      const p = new T.Mesh(new T.BoxGeometry(w.chord * 0.45, w.h, 0.025), wingM);
+      p.position.set(sh.X(s) + 0.01, z - w.h / 2, sg * span * 0.36); grp.add(p);
+    }
+    if (w.lower) {   // druhé (spodní) křídlo Sierry Cosworth na víku
+      const s2 = w.lower.s, z2 = sh.roof(s2) + 0.03;
+      const lip = rbox(0.12, 0.03, sh.width(s2) * 1.9, 0.012, liv.wingCol ? mat(liv.wingCol, { roughness: 0.35 }) : bodyCol); lip.position.set(sh.X(s2), z2, 0); grp.add(lip);
+    }
+  }
+  // kokpit kabrioletu: sedadla, čelní sklo, oblouk
+  if (c.cab.open) {
+    const cab = c.cab;
+    const seatM = mat(0x3a3a3e, { roughness: 0.8, clearcoat: 0 });
+    const zf = sh.belt((cab.c0 + cab.c1) / 2) - cab.tub;
+    for (const sg of [1, -1]) {
+      const back = rbox(0.12, 0.55, 0.44, 0.05, seatM);
+      back.rotation.z = 0.25;
+      back.position.set(sh.X(cab.seat), zf + 0.27, sg * 0.3); grp.add(back);
+      const cush = rbox(0.42, 0.1, 0.44, 0.04, seatM); cush.rotation.y = Math.PI / 2; cush.rotation.y = 0;
+      cush.position.set(sh.X(cab.seat) + 0.25, zf + 0.06, sg * 0.3); grp.add(cush);
+    }
+    // volant
+    const sw = new T.Mesh(new T.TorusGeometry(0.17, 0.02, 10, 32), dark);
+    sw.position.set(sh.X(cab.c0 + 0.06), sh.belt(cab.c0) + 0.02, 0.3); sw.rotation.set(0, Math.PI / 2, 0);
+    grp.add(sw);
+    // čelní sklo (rámeček + sklo)
+    const s0 = cab.ws0, s1 = cab.ws1, h = cab.wsH;
+    const zb = sh.belt(s0);
+    const half = sh.width(s0) * 0.86;
+    const qg = new T.BufferGeometry();
+    const xa = sh.X(s0), xb = sh.X(s1);
+    qg.setAttribute('position', new T.Float32BufferAttribute([xa, zb, half, xa, zb, -half, xb, zb + h, -half, xb, zb + h, half], 3));
+    qg.setIndex([0, 1, 2, 0, 2, 3]); qg.computeVertexNormals();
+    const gl = new T.Mesh(qg, new T.MeshPhysicalMaterial({ color: 0x223040, roughness: 0.05, metalness: 0.2, transparent: true, opacity: 0.55, clearcoat: 1, side: T.DoubleSide }));
+    const ang = Math.atan2(h, (s1 - s0) * c.L);
+    grp.add(gl);
+    const fr = new T.Mesh(new T.BoxGeometry(0.035, 0.035, half * 2 + 0.02), dark);
+    fr.position.set(sh.X(s1), zb + h, 0); grp.add(fr);
+    for (const sg of [1, -1]) {
+      const a = new T.Mesh(new T.BoxGeometry(Math.hypot((s1 - s0) * c.L, h), 0.035, 0.035), dark);
+      a.rotation.z = -ang; a.position.set(sh.X(s0) - (s1 - s0) * c.L / 2, zb + h / 2, sg * half); grp.add(a);
+    }
+    if (liv.rollbar) {
+      const rb = new T.Mesh(new T.TorusGeometry(0.42, 0.03, 10, 32, Math.PI), dark);
+      rb.position.set(sh.X(cab.seat - 0.03), zf + 0.15, 0); rb.rotation.y = Math.PI / 2; rb.rotation.x = 0; grp.add(rb);
+      rb.rotation.set(0, Math.PI / 2, 0);
+    }
+  }
+  // rallye přídavná světla na kapotě / nárazníku
+  if (liv.pod && liv.pod.lamps) {
+    const hMat = mat(liv.pod.col || liv.body, { roughness: 0.35, clearcoat: 0.8 });
+    const lens = mat(0xfffbe6, { emissive: 0xfff2c0, emissiveIntensity: 0.6, roughness: 0.08, clearcoat: 1 });
+    for (const lp of liv.pod.lamps) {
+      const fx = sh.X(lp.x / c.L);
+      const house = new T.Mesh(new T.CylinderGeometry(lp.r + 0.028, lp.r + 0.035, 0.14, 32), hMat);
+      house.rotation.z = Math.PI / 2; house.position.set(fx, lp.z, lp.y); grp.add(house);
+      const ringM = new T.Mesh(new T.TorusGeometry(lp.r + 0.006, 0.012, 8, 32), chrome);
+      ringM.rotation.y = Math.PI / 2; ringM.position.set(fx + 0.072, lp.z, lp.y); grp.add(ringM);
+      const l = new T.Mesh(new T.CircleGeometry(lp.r, 32), lens);
+      l.rotation.y = Math.PI / 2; l.position.set(fx + 0.071, lp.z, lp.y); grp.add(l);
+    }
+    if (liv.pod.bridge) { const b = liv.pod.bridge; const m = rbox(0.14, b.h, b.w, 0.03, hMat); m.position.set(sh.X(b.x / c.L), b.z, 0); grp.add(m); }
+  } else if (liv.pod) {
+    const s = liv.pod.s ?? 0.035;
+    const n = liv.pod.n || 4;
+    const zc = liv.pod.z ?? (sh.belt(s) + 0.09);
+    const spacing = liv.pod.gap || 0.26;
+    const podMat = mat(liv.pod.col || 0x111111, { roughness: 0.4 });
+    const lens = mat(0xfffbe6, { emissive: 0xfff2c0, emissiveIntensity: 0.7, roughness: 0.1, clearcoat: 1 });
+    const fx = sh.X(s) + 0.05;
+    for (let i = 0; i < n; i++) {
+      const y = (i - (n - 1) / 2) * spacing;
+      const cyl = new T.Mesh(new T.CylinderGeometry(0.095, 0.085, 0.12, 28), podMat);
+      cyl.rotation.z = Math.PI / 2; cyl.position.set(fx, zc, y); grp.add(cyl);
+      const l = new T.Mesh(new T.CircleGeometry(0.083, 28), lens);
+      l.rotation.y = Math.PI / 2; l.position.set(fx + 0.062, zc, y); grp.add(l);
+    }
+    const bar = new T.Mesh(new T.BoxGeometry(0.04, 0.03, spacing * (n - 1) + 0.1), podMat);
+    bar.position.set(fx - 0.03, zc - 0.07, 0); grp.add(bar);
+  }
+  // lapače bláta
+  if (liv.flaps) {
+    const fm = mat(liv.flaps, { roughness: 0.7, clearcoat: 0 });
+    for (const ax of [c.axF, c.axR]) for (const sg of [1, -1]) {
+      const f = new T.Mesh(new T.BoxGeometry(0.012, 0.22, c.tyreW + 0.05), fm);
+      f.position.set(sh.X(ax) - c.R - 0.09, 0.14, sg * c.track / 2); grp.add(f);
+    }
+  }
+  grp.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+  return { grp, sh };
+}
+
+// ---------------------------------------------------------------- scéna a render
+function envMap(renderer) {
+  const sc = new T.Scene();
+  const geo = new T.SphereGeometry(50, 32, 16);
+  const cols = [];
+  const p = geo.attributes.position;
+  for (let i = 0; i < p.count; i++) {
+    const y = p.getY(i) / 50;
+    const c = y > 0 ? new T.Color(0.80, 0.86, 0.95).lerp(new T.Color(1.0, 1.0, 1.0), y) : new T.Color(0.40, 0.40, 0.42).lerp(new T.Color(0.25, 0.25, 0.27), -y);
+    cols.push(c.r, c.g, c.b);
+  }
+  geo.setAttribute('color', new T.Float32BufferAttribute(cols, 3));
+  sc.add(new T.Mesh(geo, new T.MeshBasicMaterial({ vertexColors: true, side: T.BackSide })));
+  const box = (w, h, x, y, z, k) => { const m = new T.Mesh(new T.PlaneGeometry(w, h), new T.MeshBasicMaterial({ color: new T.Color(k, k, k), side: T.DoubleSide })); m.position.set(x, y, z); m.lookAt(0, 0, 0); sc.add(m); };
+  box(30, 8, 0, 35, 0, 3.0);      // stropní softbox → odlesk na kapotě a střeše
+  box(20, 10, 30, 12, 20, 1.8);
+  box(20, 10, -25, 10, 25, 1.2);
+  box(25, 6, 0, 8, -40, 1.0);
+  const pm = new T.PMREMGenerator(renderer);
+  return pm.fromScene(sc, 0.03).texture;
+}
+
+let renderer, env;
+function render(c, liv, W, H, view) {
+  if (!renderer) {
+    renderer = new T.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true, alpha: true });
+    renderer.shadowMap.enabled = true; renderer.shadowMap.type = T.PCFSoftShadowMap;
+    renderer.toneMapping = T.ACESFilmicToneMapping; renderer.toneMappingExposure = 0.95;
+    renderer.outputColorSpace = T.SRGBColorSpace;
+    env = envMap(renderer);
+  }
+  renderer.setPixelRatio(1);
+  renderer.setSize(W, H, false);
+  const scene = new T.Scene();
+  scene.environment = env;
+  const { grp } = buildCar(c, liv);
+  scene.add(grp);
+  // podlaha se stínem
+  const ground = new T.Mesh(new T.PlaneGeometry(40, 40), new T.ShadowMaterial({ opacity: 0.22 }));
+  ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true; scene.add(ground);
+  // měkký kontaktní stín
+  const blobC = document.createElement('canvas'); blobC.width = blobC.height = 256;
+  const bx = blobC.getContext('2d'); const gr = bx.createRadialGradient(128, 128, 10, 128, 128, 128);
+  gr.addColorStop(0, 'rgba(0,0,0,0.55)'); gr.addColorStop(0.55, 'rgba(0,0,0,0.25)'); gr.addColorStop(1, 'rgba(0,0,0,0)');
+  bx.fillStyle = gr; bx.fillRect(0, 0, 256, 256);
+  const blob = new T.Mesh(new T.PlaneGeometry(c.L * 1.25, c.W * 1.45), new T.MeshBasicMaterial({ map: new T.CanvasTexture(blobC), transparent: true, depthWrite: false }));
+  blob.rotation.x = -Math.PI / 2; blob.position.y = 0.003; scene.add(blob);
+
+  scene.add(new T.HemisphereLight(0xf2f6ff, 0x6a6660, 0.9));
+  const sun = new T.DirectionalLight(0xffffff, 2.2);
+  sun.position.set(3, 9, 4); sun.castShadow = true;
+  sun.shadow.mapSize.set(window.RC90_SHADOW || 2048, window.RC90_SHADOW || 2048); sun.shadow.radius = 6;
+  Object.assign(sun.shadow.camera, { left: -4, right: 4, top: 4, bottom: -4, near: 1, far: 25 });
+  sun.shadow.bias = -0.0004;
+  scene.add(sun);
+  const fill = new T.DirectionalLight(0xdfe8ff, 0.5); fill.position.set(-4, 3, -3); scene.add(fill);
+
+  const v = view || {};
+  let cam;
+  if (v.ortho) {
+    const hw = v.ortho / 2, hh = hw * H / W;
+    cam = new T.OrthographicCamera(-hw, hw, hh, -hh, 0.1, 100);
+    if (v.side) { cam.position.set(0, hh - 0.1, 20); cam.lookAt(0, hh - 0.1, 0); }
+    else if (v.front) { cam.position.set(20, hh - 0.1, 0); cam.lookAt(0, hh - 0.1, 0); }
+    else { cam.position.set(0, 20, 0); cam.up.set(v.top ? 1 : -1, 0, 0); cam.lookAt(0, 0, 0); }
+    ground.visible = !!v.top; blob.visible = !!v.top;
+  } else {
+    cam = new T.PerspectiveCamera(v.fov || 20, W / H, 0.1, 100);
+    const az = (v.az ?? 38) * Math.PI / 180, el = (v.el ?? 27) * Math.PI / 180;
+    const dist = v.dist || 11.2;
+    cam.position.set(Math.cos(el) * Math.cos(az) * dist, Math.sin(el) * dist + 0.3, Math.cos(el) * Math.sin(az) * dist);
+    cam.lookAt(v.tx || 0, v.ty ?? 0.55, 0);
+  }
+  renderer.render(scene, cam);
+  const url = renderer.domElement.toDataURL('image/png');
+  scene.traverse(o => { if (o.geometry) o.geometry.dispose(); if (o.material) { const m = o.material; if (m.map) m.map.dispose(); m.dispose(); } });
+  return url;
+}
+function renderWheel(style, col, W, H) {
+  if (!renderer) render(window.CARS[0], window.CARS[0].liveries[0], 16, 16, {});
+  renderer.setSize(W, H, false);
+  const sc = new T.Scene(); sc.environment = env;
+  const wv = wheel({ R: 0.30, tyreW: 0.21 }, { rim: col, rimStyle: style });
+  wv.rotation.x = Math.PI / 2; wv.rotation.y = 0.0; wv.rotation.z = 0; sc.add(wv);
+  wv.rotation.set(Math.PI / 2, 0, 0);
+  const holder = new T.Group(); holder.add(wv); holder.rotation.y = -0.45; sc.add(holder);
+  sc.add(new T.HemisphereLight(0xf2f6ff, 0x6a6660, 1.0));
+  const d = new T.DirectionalLight(0xffffff, 2.0); d.position.set(2, 3, 4); sc.add(d);
+  const cam = new T.PerspectiveCamera(22, W / H, 0.1, 20); cam.position.set(0, 0.15, 2.0); cam.lookAt(0, 0, 0);
+  renderer.render(sc, cam);
+  return renderer.domElement.toDataURL('image/png');
+}
+window.RC90 = { render, renderWheel };
+
+// ===== specs.js
+// Rozměry podle skutečných aut (m). s = 0 předek … 1 záď
+const RED = '#D3121F', WHITE = '#F3F3EF', BLACK = '#121315';
+window.CARS = [
+  {
+    id: 'sierra', name: 'FORD SIERRA RS COSWORTH', dims: '4,46 × 1,70 m',
+    L: 4.46, W: 1.70, gc: 0.20, R: 0.31, tyreW: 0.21, track: 1.46, axF: 0.19, axR: 0.775,
+    pF: 12, pR: 10, noseTaper: 0.09, tumble: 0.76, shoulder: 0.06,
+    belt: [[0, 0.56], [0.025, 0.68], [0.10, 0.77], [0.285, 0.87], [0.70, 0.93], [0.955, 0.97], [0.985, 0.92], [1, 0.72]],
+    cab: { cowl: 0.285, rf: 0.445, rr: 0.635, deck: 0.955, roofH: 1.36, side: [[0.30, 0.535], [0.548, 0.80]] },
+    wing: { s: 0.875, h: 0.15, span: 0.98, chord: 0.24, tilt: 0.1, lower: { s: 0.985 } },
+    bumpers: [{ s: 0.07, z0: 0.21, z1: 0.43, m: 'body', off: 0.03 }, { s: 0.06, z0: 0.24, z1: 0.48, m: 'body', rear: true, off: 0.03 }],
+    lights: [{ y: 0.52, z: 0.535, w: 0.34, h: 0.12 }, { y: 0.69, z: 0.535, w: 0.07, h: 0.12, amber: 1 }],
+    tail: [{ y: 0.58, z: 0.74, w: 0.34, h: 0.15 }],
+    grille: [{ y: 0, z: 0.535, w: 0.6, h: 0.07 }, { y: 0, z: 0.31, w: 0.56, h: 0.06 }],
+    liveries: [
+      { name: 'TOVÁRNÍ · ČERVENÁ', body: '#B3121F', rim: '#D7DADF', rimStyle: 'multi' },
+      {
+        name: 'POLEP · BÍLO-ČERVENÝ', era: 'styl Gr. A 1987', body: WHITE, rim: '#F4F4F4', rimStyle: 'multi', flaps: RED,
+        sun: { bg: RED, fg: '#fff' },
+        paint(P) {
+          P.side(0, 1, 0, 0.40, RED);
+          P.side(0, 1, 0.40, 0.445, BLACK);
+          P.sidePoly([[0, 0.40], [0.13, 0.40], [0.07, 1], [0, 1]], RED);
+          P.topFull(0, 0.035, RED);
+          P.topPoly([[0.03, 0], [0.03, 1], [0.12, 0]], RED);
+          P.doorNumber(0.43, 0.70, 7, { ring: BLACK });
+          P.sideText('RC-90', 0.68, 0.66, 0.24, RED, { italic: 1 });
+          P.sideText('RALLYE', 0.32, 0.22, 0.13, '#fff', { italic: 1 });
+          P.topText('RC-90', 0.17, 0.30, RED, { italic: 1 });
+          P.roofNumber(0.54, 7, { ring: BLACK });
+        },
+      },
+      {
+        name: 'POLEP · MODRO-ORANŽOVÝ', era: 'styl Gr. A 1991', body: '#14306B', rim: '#D9B44A', rimStyle: 'star', flaps: '#F28A1A',
+        pod: { n: 4, gap: 0.27, s: 0.03 }, sun: { bg: '#F28A1A', fg: '#14306B' },
+        paint(P) {
+          P.sidePoly([[0, 0.10], [1, 0.52], [1, 0.70], [0, 0.30]], '#F28A1A');
+          P.sidePoly([[0, 0.30], [1, 0.70], [1, 0.77], [0, 0.37]], '#FFD23A');
+          P.topPoly([[0.00, 0.0], [0.00, 1], [0.08, 1], [0.20, 0]], '#F28A1A');
+          P.topPoly([[0.08, 1], [0.11, 1], [0.23, 0], [0.20, 0]], '#FFD23A');
+          P.doorNumber(0.42, 0.73, 12, { ring: '#FFD23A' });
+          P.sideText('RC-90', 0.60, 0.80, 0.20, '#fff', { italic: 1 });
+          P.topText('RC-90', 0.255, 0.17, '#fff', { italic: 1 });
+          P.roofNumber(0.54, 12, { ring: '#F28A1A' });
+        },
+      },
+    ],
+  },
+  {
+    id: 'fiesta', name: 'FORD FIESTA Mk3', dims: '3,80 × 1,61 m',
+    L: 3.80, W: 1.61, gc: 0.18, R: 0.28, tyreW: 0.185, track: 1.40, axF: 0.19, axR: 0.835,
+    pF: 10, pR: 14, noseTaper: 0.08, tumble: 0.80, shoulder: 0.06,
+    belt: [[0, 0.55], [0.03, 0.68], [0.12, 0.77], [0.30, 0.86], [0.80, 0.92], [0.975, 0.95], [0.99, 0.88], [1, 0.70]],
+    cab: { cowl: 0.30, rf: 0.47, rr: 0.765, deck: 0.975, roofH: 1.32, rsBow: 0.12, side: [[0.315, 0.60], [0.615, 0.84]] },
+    wing: { s: 0.78, h: 0.025, span: 0.9, chord: 0.17, tilt: 0.15 },
+    bumpers: [{ s: 0.075, z0: 0.20, z1: 0.42, m: 'dark', off: 0.035 }, { s: 0.06, z0: 0.22, z1: 0.46, m: 'dark', rear: true, off: 0.035 }],
+    lights: [{ y: 0.46, z: 0.58, w: 0.40, h: 0.13 }],
+    tail: [{ y: 0.66, z: 0.78, w: 0.13, h: 0.24 }],
+    grille: [{ y: 0, z: 0.585, w: 0.42, h: 0.06 }],
+    liveries: [
+      { name: 'TOVÁRNÍ · BÍLÁ', body: '#F1F1EC', rim: '#BFC3C8', rimStyle: 'dish' },
+      {
+        name: 'POLEP · TRIKOLÓRA', era: 'styl Gr. N 1990', body: WHITE, rim: '#F4F4F4', rimStyle: 'multi', flaps: '#1B3A8C',
+        sun: { bg: '#1B3A8C', fg: '#fff' },
+        paint(P) {
+          const band = (a, b, col) => P.sidePoly([[0, a], [1, a + 0.55], [1, b + 0.55], [0, b]], col);
+          band(-0.15, 0.00, '#36A3E0'); band(0.00, 0.12, '#1B3A8C'); band(0.12, 0.22, RED);
+          P.topPoly([[0, 0.15], [1, 0.15], [1, 0.38], [0, 0.38]], '#36A3E0');
+          P.topPoly([[0, 0.38], [1, 0.38], [1, 0.62], [0, 0.62]], '#1B3A8C');
+          P.topPoly([[0, 0.62], [1, 0.62], [1, 0.85], [0, 0.85]], RED);
+          P.doorNumber(0.45, 0.80, 21, { ring: '#1B3A8C', r: 0.15 });
+          P.sideText('RC-90', 0.73, 0.88, 0.17, '#1B3A8C', { italic: 1 });
+          P.roofNumber(0.66, 21, { ring: '#1B3A8C', r: 0.2 });
+        },
+      },
+      {
+        name: 'POLEP · ŽLUTO-ČERNÝ', era: 'styl Gr. A 1992', body: '#F6C400', rim: '#1d1d1f', rimStyle: 'multi', flaps: BLACK,
+        pod: { n: 2, gap: 0.5, s: 0.02, z: 0.50 }, sun: { bg: BLACK, fg: '#F6C400' },
+        paint(P) {
+          P.side(0, 1, 0, 0.33, BLACK);
+          P.sidePoly([[0, 0.33], [0.25, 0.33], [0.18, 0.42], [0, 0.42]], BLACK);
+          P.topPoly([[0, 0.12], [0.30, 0.12], [0.30, 0.32], [0, 0.32]], BLACK);
+          P.topPoly([[0.47, 0.12], [1, 0.12], [1, 0.32], [0.47, 0.32]], BLACK);
+          P.sideText('RC-90', 0.47, 0.17, 0.22, '#F6C400', { italic: 1 });
+          P.doorNumber(0.46, 0.75, 4, { r: 0.15 });
+          P.topText('RALLYE', 0.15, 0.17, BLACK, { italic: 1 });
+          P.roofNumber(0.66, 4, { r: 0.2 });
+        },
+      },
+    ],
+  },
+  {
+    id: 'e34', name: 'BMW M5 (E34)', dims: '4,72 × 1,75 m',
+    L: 4.72, W: 1.75, gc: 0.20, R: 0.32, tyreW: 0.235, track: 1.47, axF: 0.182, axR: 0.767,
+    pF: 12, pR: 14, noseTaper: 0.05, tumble: 0.80, shoulder: 0.05,
+    belt: [[0, 0.58], [0.02, 0.70], [0.08, 0.76], [0.29, 0.88], [0.76, 0.95], [0.97, 0.97], [0.99, 0.92], [1, 0.74]],
+    cab: { cowl: 0.29, rf: 0.43, rr: 0.665, deck: 0.79, roofH: 1.39, side: [[0.30, 0.475], [0.487, 0.70]] },
+    bumpers: [{ s: 0.06, z0: 0.22, z1: 0.46, m: 'body', off: 0.03 }, { s: 0.05, z0: 0.24, z1: 0.50, m: 'body', rear: true, off: 0.03 }],
+    lights: [{ shape: 'round', y: 0.37, r: 0.072, z: 0.605 }, { shape: 'round', y: 0.56, r: 0.072, z: 0.605 }],
+    tail: [{ y: 0.58, z: 0.82, w: 0.44, h: 0.15 }],
+    grille: [{ y: 0, z: 0.605, w: 1.30, h: 0.17, r: 0.03 }, { y: 0, z: 0.31, w: 0.9, h: 0.06 }],
+    liveries: [
+      { name: 'TOVÁRNÍ · ČERNÁ METALÍZA', body: '#17181B', metal: 1, rim: '#C8CCD2', rimStyle: 'star' },
+      {
+        name: 'POLEP · MOTORSPORT', era: 'styl cestovní vozy 1990', body: WHITE, rim: '#E9EAEC', rimStyle: 'multi',
+        sun: { bg: '#2B2F7F', fg: '#fff' },
+        paint(P) {
+          const b = (a, c, col) => P.sidePoly([[0, a], [1, a + 0.08], [1, c + 0.08], [0, c]], col);
+          b(0.50, 0.58, '#4FA6DB'); b(0.58, 0.66, '#2B2F7F'); b(0.66, 0.74, RED);
+          P.topPoly([[0, 0.25], [1, 0.25], [1, 0.45], [0, 0.45]], '#4FA6DB');
+          P.topPoly([[0, 0.45], [1, 0.45], [1, 0.65], [0, 0.65]], '#2B2F7F');
+          P.topPoly([[0, 0.65], [1, 0.65], [1, 0.85], [0, 0.85]], RED);
+          P.doorNumber(0.40, 0.30, 5, { r: 0.15, ring: '#2B2F7F' });
+          P.sideText('RC-90', 0.60, 0.30, 0.22, '#2B2F7F', { italic: 1 });
+          P.roofNumber(0.55, 5, { r: 0.21, ring: '#2B2F7F' });
+        },
+      },
+      {
+        name: 'POLEP · MODRO-BÍLÝ', era: 'styl Gr. A 1988', body: WHITE, rim: '#F2F2F2', rimStyle: 'multi', flaps: '#102A5C',
+        pod: { n: 4, gap: 0.28, s: 0.025 }, sun: { bg: '#102A5C', fg: '#C9A24A' },
+        paint(P) {
+          P.sidePoly([[0, 0], [0.58, 0], [0.36, 1.2], [0, 1.2]], '#102A5C');
+          P.sidePoly([[0.58, 0], [0.605, 0], [0.385, 1.2], [0.36, 1.2]], '#C9A24A');
+          P.sidePoly([[0.605, 0], [0.615, 0], [0.395, 1.2], [0.385, 1.2]], RED);
+          P.topFull(0, 0.29, '#102A5C');
+          P.topPoly([[0.27, 0], [0.27, 1], [0.29, 1], [0.29, 0]], '#C9A24A');
+          P.sideText('RC-90', 0.37, 0.45, 0.20, '#fff', { italic: 1 });
+          P.doorNumber(0.58, 0.70, 9, { r: 0.15, ring: '#102A5C' });
+          P.topText('RC-90', 0.17, 0.26, '#C9A24A', { italic: 1 });
+          P.roofNumber(0.55, 9, { r: 0.21, ring: '#102A5C' });
+        },
+      },
+    ],
+  },
+  {
+    id: 'mx5', name: 'MAZDA MX-5 (NA)', dims: '3,97 × 1,68 m',
+    L: 3.97, W: 1.675, gc: 0.16, R: 0.29, tyreW: 0.195, track: 1.42, axF: 0.199, axR: 0.77,
+    pF: 6, pR: 9, noseTaper: 0.12, tailTaper: 0.03, tumble: 0.8, shoulder: 0.08, bulge: 0.02,
+    belt: [[0, 0.50], [0.03, 0.60], [0.15, 0.69], [0.37, 0.80], [0.66, 0.84], [0.92, 0.87], [0.985, 0.85], [1, 0.66]],
+    cab: { open: 1, c0: 0.405, c1: 0.665, tub: 0.38, seat: 0.60, ws0: 0.375, ws1: 0.46, wsH: 0.36, mirror: 0.40 },
+    lights: [{ y: 0.58, z: 0.36, w: 0.16, h: 0.05 }],
+    tail: [{ y: 0.56, z: 0.70, w: 0.30, h: 0.10, round: 0.5 }],
+    grille: [{ y: 0, z: 0.32, w: 0.46, h: 0.10, r: 0.05 }],
+    liveries: [
+      { name: 'TOVÁRNÍ · ČERVENÁ', body: '#C3101C', rim: '#CDD0D5', rimStyle: 'multi' },
+      {
+        name: 'POLEP · ORANŽOVO-ZELENÝ', era: 'styl Le Mans 1991', body: '#F58220', rim: '#F4F4F4', rimStyle: 'star', rollbar: 1,
+        paint(P) {
+          const G = '#00A04F';
+          P.sidePoly([[0.30, 0], [1, 0], [1, 1.2], [0.62, 1.2]], G);
+          for (const s of [0.12, 0.24]) P.sidePoly([[s, 0.15], [s + 0.05, 0.45], [s, 0.75], [s - 0.05, 0.45]], G);
+          P.topPoly([[0, 0], [0, 1], [0.13, 1], [0.22, 0]], G);
+          P.topFull(0.66, 1, G);
+          P.doorNumber(0.50, 0.55, 55, { r: 0.16 });
+          P.sideText('RC-90', 0.86, 0.82, 0.15, '#fff', { italic: 1 });
+          P.topText('RC-90', 0.25, 0.22, G, { italic: 1 });
+          P.roofNumber(0.82, 55, { r: 0.21 });
+        },
+      },
+      {
+        name: 'POLEP · BÍLO-MODRÝ', era: 'styl klubové závody 1995', body: WHITE, rim: '#1F4FA2', rimStyle: 'multi', rollbar: 1,
+        paint(P) {
+          P.sidePoly([[0, 0], [1, 0.35], [1, 0.6], [0, 0.25]], '#1F4FA2');
+          P.sidePoly([[0, 0.25], [1, 0.6], [1, 0.7], [0, 0.35]], '#5DB7EA');
+          P.topPoly([[0, 0], [1, 0], [1, 0.25], [0, 0.25]], '#1F4FA2');
+          P.topPoly([[0, 0.25], [1, 0.25], [1, 0.38], [0, 0.38]], '#5DB7EA');
+          P.doorNumber(0.50, 0.75, 33, { r: 0.15, ring: '#1F4FA2' });
+          P.sideText('RC-90', 0.82, 0.80, 0.18, '#1F4FA2', { italic: 1 });
+          P.topText('RALLYE', 0.82, 0.12, '#1F4FA2', { italic: 1 });
+        },
+      },
+    ],
+  },
+  {
+    id: 'c2', name: 'CITROËN C2', dims: '3,67 × 1,66 m',
+    L: 3.67, W: 1.66, gc: 0.18, R: 0.29, tyreW: 0.2, track: 1.45, axF: 0.193, axR: 0.826,
+    pF: 7, pR: 14, noseTaper: 0.11, tumble: 0.82, shoulder: 0.07,
+    belt: [[0, 0.58], [0.03, 0.73], [0.12, 0.85], [0.235, 0.93], [0.80, 1.00], [0.975, 1.03], [0.99, 0.96], [1, 0.80]],
+    cab: { cowl: 0.235, rf: 0.45, rr: 0.83, deck: 0.982, roofH: 1.46, wsBow: 0.05, rsBow: 0.08, side: [[0.25, 0.58], [0.595, 0.885]] },
+    wing: { s: 0.84, h: 0.02, span: 0.92, chord: 0.2, tilt: 0.12 },
+    bumpers: [{ s: 0.08, z0: 0.20, z1: 0.48, m: 'body', off: 0.03 }, { s: 0.05, z0: 0.24, z1: 0.52, m: 'body', rear: true, off: 0.03 }],
+    lights: [{ y: 0.55, z: 0.70, w: 0.34, h: 0.15, round: 0.5 }],
+    tail: [{ y: 0.64, z: 0.88, w: 0.14, h: 0.30, round: 0.4 }],
+    grille: [{ y: 0, z: 0.62, w: 0.50, h: 0.08 }, { y: 0, z: 0.34, w: 0.80, h: 0.13, r: 0.04 }],
+    liveries: [
+      { name: 'TOVÁRNÍ · ČERVENÁ', body: '#B4121B', rim: '#C9CDD2', rimStyle: 'multi' },
+      {
+        name: 'POLEP · ČERVENO-BÍLÝ', era: 'styl S1600 2004', body: '#D5121B', rim: '#F4F4F4', rimStyle: 'star', flaps: BLACK,
+        sun: { bg: '#fff', fg: '#D5121B' },
+        paint(P) {
+          P.sidePoly([[0.42, 1.3], [1, 1.3], [1, -0.1], [0.80, -0.1]], WHITE);
+          P.sidePoly([[0.40, 1.3], [0.42, 1.3], [0.80, -0.1], [0.78, -0.1]], '#8A8D92');
+          P.topFull(0.60, 1, WHITE);
+          P.sideText('RC-90', 0.42, 0.45, 0.22, '#fff', { italic: 1 });
+          P.doorNumber(0.70, 0.62, 18, { r: 0.15, ring: '#D5121B' });
+          P.topText('RC-90', 0.13, 0.24, '#fff', { italic: 1 });
+          P.roofNumber(0.70, 18, { r: 0.2, ring: '#D5121B' });
+        },
+      },
+      {
+        name: 'POLEP · TRIKOLÓRA', era: 'styl WRC 2007', body: WHITE, rim: '#F4F4F4', rimStyle: 'multi', flaps: '#0055A4',
+        sun: { bg: '#0055A4', fg: '#fff' },
+        paint(P) {
+          const band = (a, b, col) => P.sidePoly([[0, a], [0.5, a + 0.12], [1, a + 0.5], [1, b + 0.5], [0.5, b + 0.12], [0, b]], col);
+          band(-0.2, 0.05, '#0055A4'); band(0.05, 0.17, '#E1251B'); band(0.17, 0.27, '#F39200');
+          P.topFull(0.45, 0.88, '#0055A4');
+          P.topPoly([[0, 0.55], [0.24, 0.55], [0.24, 0.85], [0, 0.85]], '#E1251B');
+          P.doorNumber(0.42, 0.78, 3, { r: 0.15, ring: '#0055A4' });
+          P.sideText('RC-90', 0.72, 0.82, 0.19, '#0055A4', { italic: 1 });
+          P.topText('RC-90', 0.13, 0.20, '#0055A4', { italic: 1 });
+          P.roofNumber(0.66, 3, { r: 0.21 });
+        },
+      },
+    ],
+  },
+  {
+    id: 'fulvia', name: 'LANCIA FULVIA COUPÉ HF', dims: '3,98 × 1,56 m',
+    L: 3.98, W: 1.555, gc: 0.17, R: 0.28, tyreW: 0.175, track: 1.30, axF: 0.183, axR: 0.769,
+    pF: 10, pR: 10, noseTaper: 0.06, tumble: 0.74, shoulder: 0.05,
+    belt: [[0, 0.58], [0.02, 0.68], [0.10, 0.75], [0.33, 0.83], [0.78, 0.86], [0.97, 0.86], [0.99, 0.80], [1, 0.62]],
+    cab: { cowl: 0.33, rf: 0.45, rr: 0.62, deck: 0.80, roofH: 1.30, rsBow: -0.02, side: [[0.345, 0.555], [0.565, 0.70]] },
+    bumpers: [{ s: 0.06, z0: 0.37, z1: 0.44, m: 'chrome', off: 0.04, depth: 0.03 }, { s: 0.05, z0: 0.40, z1: 0.47, m: 'chrome', rear: true, off: 0.04, depth: 0.03 }],
+    lights: [{ shape: 'round', y: 0.30, r: 0.07, z: 0.60 }, { shape: 'round', y: 0.50, r: 0.082, z: 0.60 }],
+    tail: [{ y: 0.55, z: 0.70, w: 0.16, h: 0.09 }],
+    grille: [{ y: 0, z: 0.58, w: 0.40, h: 0.13, chrome: 1 }],
+    liveries: [
+      { name: 'TOVÁRNÍ · ČERVENÁ', body: '#A50F15', rim: '#C9CDD2', rimStyle: 'dish', chromeTrim: 1 },
+      {
+        name: 'POLEP · HF WORKS', era: 'styl Monte Carlo 1972', body: '#B0121A', rim: '#B9BDC2', rimStyle: 'dish', chromeTrim: 1,
+        pod: { n: 2, gap: 0.62, s: 0.0, z: 0.50 },
+        paint(P) {
+          P.topFull(0, 0.325, '#151515'); P.matteTop(0, 0.325);
+          P.side(0, 1, 0.08, 0.13, '#F2F2F2');
+          P.doorNumber(0.46, 0.60, 14, { r: 0.17 });
+          P.sideText('RC-90', 0.72, 0.62, 0.16, '#F2F2F2', { italic: 1 });
+          P.topText('RALLYE', 0.70, 0.13, '#F2F2F2', {});
+        },
+      },
+      {
+        name: 'POLEP · BÍLO-ČERVENÁ ŠIPKA', era: 'styl 1974', body: WHITE, rim: '#F4F4F4', rimStyle: 'star', flaps: RED,
+        sun: { bg: RED, fg: '#fff' },
+        paint(P) {
+          P.topFull(0, 0.33, RED);
+          P.topFull(0.45, 0.62, RED);
+          P.topPoly([[0.62, 1.2], [0.50, 0], [0.62, -1.2]], WHITE);
+          P.sidePoly([[0, -0.1], [0.36, -0.1], [0.20, 1.3], [0, 1.3]], RED);
+          P.sidePoly([[0.20, 1.3], [0.36, -0.1], [0.42, -0.1], [0.26, 1.3]], WHITE);
+          P.sideText('RC-90', 0.17, 0.80, 0.14, '#fff', { italic: 1 });
+          P.doorNumber(0.47, 0.60, 1, { r: 0.16, ring: RED });
+          P.topText('RC-90', 0.16, 0.26, '#fff', { italic: 1 });
+        },
+      },
+    ],
+  },
+  {
+    id: 'lada', name: 'LADA 2105', dims: '4,07 × 1,62 m',
+    L: 4.07, W: 1.62, gc: 0.19, R: 0.29, tyreW: 0.175, track: 1.37, axF: 0.18, axR: 0.776,
+    pF: 16, pR: 16, noseTaper: 0.02, tumble: 0.86, shoulder: 0.04, bulge: 0.004,
+    belt: [[0, 0.66], [0.015, 0.76], [0.06, 0.80], [0.31, 0.89], [0.79, 0.93], [0.975, 0.95], [0.99, 0.92], [1, 0.78]],
+    cab: { cowl: 0.31, rf: 0.42, rr: 0.675, deck: 0.79, roofH: 1.44, wsBow: 0.02, rsBow: 0.02, side: [[0.322, 0.475], [0.488, 0.70]] },
+    bumpers: [{ s: 0.05, z0: 0.36, z1: 0.47, m: 'chrome', off: 0.05, depth: 0.03 }, { s: 0.045, z0: 0.38, z1: 0.49, m: 'chrome', rear: true, off: 0.05, depth: 0.03 }],
+    lights: [{ y: 0.52, z: 0.66, w: 0.34, h: 0.15, round: 0.1 }],
+    tail: [{ y: 0.55, z: 0.72, w: 0.42, h: 0.14, round: 0.1 }],
+    grille: [{ y: 0, z: 0.66, w: 0.66, h: 0.13 }],
+    liveries: [
+      { name: 'TOVÁRNÍ · BÍLÁ', body: '#EDEDE4', rim: '#C2C6CB', rimStyle: 'dish', chromeTrim: 1 },
+      {
+        name: 'POLEP · ČERVENO-MODRÝ', era: 'styl Gr. B 1983', body: WHITE, rim: '#F4F4F4', rimStyle: 'dish', flaps: BLACK,
+        pod: { n: 4, gap: 0.27, s: 0.02 }, sun: { bg: RED, fg: '#fff' },
+        paint(P) {
+          P.sidePoly([[0, 0.05], [1, 0.45], [1, 0.62], [0, 0.22]], RED);
+          P.sidePoly([[0, 0.22], [1, 0.62], [1, 0.72], [0, 0.32]], '#1F4FA2');
+          P.topPoly([[0, 0.2], [1, 0.2], [1, 0.5], [0, 0.5]], RED);
+          P.topPoly([[0, 0.5], [1, 0.5], [1, 0.7], [0, 0.7]], '#1F4FA2');
+          P.doorNumber(0.40, 0.75, 8, { r: 0.15, ring: RED });
+          P.sideText('RC-90', 0.66, 0.85, 0.18, RED, { italic: 1 });
+          P.sideText('RALLYE', 0.30, 0.13, 0.12, '#fff', { italic: 1 });
+          P.roofNumber(0.55, 8, { r: 0.21, ring: RED });
+        },
+      },
+      {
+        name: 'POLEP · ORANŽOVO-ČERNÝ', era: 'styl Gr. A 1986', body: '#EE7A1B', rim: '#1d1d1f', rimStyle: 'dish', flaps: BLACK,
+        sun: { bg: BLACK, fg: '#EE7A1B' },
+        paint(P) {
+          P.side(0, 1, 0, 0.30, BLACK);
+          P.topPoly([[0, 0.15], [1, 0.15], [1, 0.40], [0, 0.40]], BLACK);
+          P.topPoly([[0, 0.50], [1, 0.50], [1, 0.62], [0, 0.62]], BLACK);
+          P.sideText('RC-90', 0.50, 0.15, 0.20, '#EE7A1B', { italic: 1 });
+          P.doorNumber(0.40, 0.72, 26, { r: 0.15 });
+          P.roofNumber(0.55, 26, { r: 0.21 });
+        },
+      },
+    ],
+  },
+];
+
+// ===== geo.js
+// Přesná geometrie v metrech (x = vzdálenost od předního nárazníku).
+// Zdroje: cars-data.com, auto-data.net, FIA homologační listy (Fiesta A-5403, Škoda 130 RS 1676), Wikipedia.
+const GEO = {
+  sierra: {
+    name: 'FORD SIERRA RS COSWORTH', dims: '4 459 × 1 728 × 1 376 mm · rozvor 2 608',
+    L: 4.459, W: 1.728, WB: 2.608, ohF: 0.84, tf: 1.438, tr: 1.446, R: 0.293, tyreW: 0.205, gc: 0.19,
+    pF: 10, pR: 9, noseTaper: 0.10, tumble: 0.74, shoulder: 0.06, flare: 0.012,
+    belt: [[0, 0.50], [0.05, 0.64], [0.30, 0.72], [0.84, 0.80], [1.36, 0.875], [2.6, 0.92], [3.6, 0.95], [4.25, 0.985], [4.40, 0.98], [4.459, 0.75]],
+    cab: { cowl: 1.36, rf: 2.06, rr: 2.92, deck: 4.20, roofH: 1.376, rsBow: 0.06, side: [[1.42, 2.40], [2.46, 3.58]] },
+    wing: { s: 4.02, h: 0.16, span: 0.98, chord: 0.28, tilt: 0.12, lower: { s: 4.40 } },
+    bumpers: [{ s: 0.07, z0: 0.20, z1: 0.46, m: 'body', off: 0.03 }, { s: 0.06, z0: 0.24, z1: 0.50, m: 'body', rear: true, off: 0.03 }],
+    lights: [{ y: 0.52, z: 0.57, w: 0.36, h: 0.13 }, { y: 0.73, z: 0.57, w: 0.06, h: 0.12, amber: 1 }],
+    tail: [{ y: 0.60, z: 0.80, w: 0.34, h: 0.16 }],
+    grille: [{ y: 0, z: 0.575, w: 0.62, h: 0.06 }, { y: 0, z: 0.31, w: 0.70, h: 0.10, r: 0.03 }],
+  },
+  fiesta: {
+    name: 'FORD FIESTA XR2i (Mk3)', dims: '3 804 × 1 639 × 1 326 mm · rozvor 2 450',
+    L: 3.804, W: 1.639, WB: 2.450, ohF: 0.725, tf: 1.406, tr: 1.376, R: 0.276, tyreW: 0.185, gc: 0.18,
+    pF: 9, pR: 14, noseTaper: 0.10, tumble: 0.80, shoulder: 0.06,
+    belt: [[0, 0.52], [0.05, 0.64], [0.30, 0.70], [0.725, 0.77], [1.10, 0.83], [2.4, 0.90], [3.3, 0.93], [3.72, 0.95], [3.78, 0.90], [3.804, 0.72]],
+    cab: { cowl: 1.10, rf: 1.82, rr: 3.06, deck: 3.71, roofH: 1.326, rsBow: 0.05, side: [[1.16, 2.30], [2.36, 3.22]] },
+    wing: { s: 3.07, h: 0.02, span: 0.92, chord: 0.18, tilt: 0.15 },
+    bumpers: [{ s: 0.075, z0: 0.20, z1: 0.46, m: 'body', off: 0.03 }, { s: 0.06, z0: 0.22, z1: 0.48, m: 'body', rear: true, off: 0.03 }],
+    lights: [{ y: 0.46, z: 0.60, w: 0.42, h: 0.14 }, { y: 0.72, z: 0.58, w: 0.05, h: 0.12, amber: 1 }, { shape: 'round', y: 0.55, r: 0.05, z: 0.34 }],
+    tail: [{ y: 0.66, z: 0.80, w: 0.14, h: 0.27 }],
+    grille: [{ y: 0, z: 0.62, w: 0.36, h: 0.05 }, { y: 0, z: 0.32, w: 0.62, h: 0.09, r: 0.03 }],
+  },
+  e34: {
+    name: 'BMW M5 (E34)', dims: '4 720 × 1 751 × 1 392 mm · rozvor 2 761',
+    L: 4.72, W: 1.751, WB: 2.761, ohF: 0.86, tf: 1.47, tr: 1.49, R: 0.322, tyreW: 0.235, gc: 0.19,
+    pF: 12, pR: 14, noseTaper: 0.05, tumble: 0.80, shoulder: 0.05,
+    belt: [[0, 0.55], [0.04, 0.68], [0.20, 0.74], [0.86, 0.80], [1.50, 0.865], [3.0, 0.92], [3.85, 0.955], [4.62, 0.98], [4.69, 0.96], [4.72, 0.78]],
+    cab: { cowl: 1.50, rf: 2.18, rr: 3.20, deck: 3.82, roofH: 1.392, wsBow: 0.06, rsBow: 0.04, side: [[1.56, 2.47], [2.53, 3.42]] },
+    bumpers: [{ s: 0.06, z0: 0.22, z1: 0.46, m: 'body', off: 0.03 }, { s: 0.05, z0: 0.24, z1: 0.52, m: 'body', rear: true, off: 0.03 }],
+    lights: [{ shape: 'round', y: 0.38, r: 0.072, z: 0.625 }, { shape: 'round', y: 0.57, r: 0.072, z: 0.625 }],
+    tail: [{ y: 0.60, z: 0.84, w: 0.46, h: 0.16 }],
+    grille: [{ y: 0, z: 0.625, w: 1.36, h: 0.18, r: 0.03 }, { y: -0.10, z: 0.635, w: 0.15, h: 0.16, chrome: 1, r: 0.04 }, { y: 0.10, z: 0.635, w: 0.15, h: 0.16, chrome: 1, r: 0.04 }, { y: 0, z: 0.32, w: 0.9, h: 0.07 }],
+  },
+  mx5: {
+    name: 'MAZDA MX-5 (NA)', dims: '3 975 × 1 675 × 1 230 mm · rozvor 2 265',
+    L: 3.975, W: 1.675, WB: 2.265, ohF: 0.82, tf: 1.41, tr: 1.43, R: 0.289, tyreW: 0.185, gc: 0.15,
+    pF: 6, pR: 9, noseTaper: 0.14, tailTaper: 0.03, tumble: 0.8, shoulder: 0.09, bulge: 0.02,
+    belt: [[0, 0.46], [0.06, 0.55], [0.30, 0.63], [0.82, 0.71], [1.62, 0.80], [2.6, 0.83], [3.6, 0.86], [3.90, 0.85], [3.975, 0.66]],
+    cab: { open: 1, c0: 1.74, c1: 2.66, tub: 0.38, seat: 2.43, ws0: 1.64, ws1: 1.99, wsH: 0.40, mirror: 1.70 },
+    lights: [{ y: 0.60, z: 0.42, w: 0.13, h: 0.05, amber: 1 }],
+    tail: [{ y: 0.56, z: 0.71, w: 0.30, h: 0.10, round: 0.5 }],
+    grille: [{ y: 0, z: 0.36, w: 0.44, h: 0.11, r: 0.05 }],
+  },
+  c2: {
+    name: 'CITROËN C2 VTS', dims: '3 666 × 1 659 × 1 474 mm · rozvor 2 315',
+    L: 3.666, W: 1.659, WB: 2.315, ohF: 0.76, tf: 1.436, tr: 1.436, R: 0.291, tyreW: 0.195, gc: 0.17,
+    pF: 7, pR: 14, noseTaper: 0.12, tumble: 0.82, shoulder: 0.07,
+    belt: [[0, 0.56], [0.05, 0.70], [0.30, 0.80], [0.76, 0.90], [0.95, 0.96], [2.4, 1.00], [3.3, 1.03], [3.60, 1.05], [3.64, 0.98], [3.666, 0.80]],
+    cab: { cowl: 0.95, rf: 1.72, rr: 3.18, deck: 3.58, roofH: 1.474, wsBow: 0.05, rsBow: 0.05, side: [[1.00, 2.10], [2.15, 3.28]] },
+    wing: { s: 3.19, h: 0.02, span: 0.92, chord: 0.2, tilt: 0.12 },
+    bumpers: [{ s: 0.08, z0: 0.20, z1: 0.50, m: 'body', off: 0.03 }, { s: 0.05, z0: 0.24, z1: 0.54, m: 'body', rear: true, off: 0.03 }],
+    lights: [{ y: 0.56, z: 0.74, w: 0.36, h: 0.16, round: 0.5 }],
+    tail: [{ y: 0.66, z: 0.92, w: 0.14, h: 0.32, round: 0.4 }],
+    grille: [{ y: 0, z: 0.66, w: 0.50, h: 0.07 }, { y: 0, z: 0.36, w: 0.85, h: 0.14, r: 0.04 }],
+  },
+  fulvia: {
+    name: 'LANCIA FULVIA COUPÉ HF', dims: '3 975 × 1 555 × 1 300 mm · rozvor 2 330',
+    L: 3.975, W: 1.555, WB: 2.330, ohF: 0.80, tf: 1.30, tr: 1.28, R: 0.287, tyreW: 0.165, gc: 0.17,
+    pF: 10, pR: 10, noseTaper: 0.06, tumble: 0.78, shoulder: 0.05,
+    belt: [[0, 0.56], [0.03, 0.70], [0.30, 0.74], [0.80, 0.77], [1.55, 0.82], [2.6, 0.85], [3.3, 0.88], [3.92, 0.86], [3.975, 0.66]],
+    cab: { cowl: 1.48, rf: 1.98, rr: 2.78, deck: 3.36, roofH: 1.30, rsBow: -0.03, side: [[1.53, 2.62], [2.66, 3.14]] },
+    bumpers: [{ s: 0.06, z0: 0.36, z1: 0.43, m: 'chrome', off: 0.04, depth: 0.03 }, { s: 0.05, z0: 0.40, z1: 0.47, m: 'chrome', rear: true, off: 0.04, depth: 0.03 }],
+    lights: [{ shape: 'round', y: 0.30, r: 0.068, z: 0.60 }, { shape: 'round', y: 0.50, r: 0.080, z: 0.60 }],
+    tail: [{ y: 0.55, z: 0.70, w: 0.16, h: 0.08 }],
+    grille: [{ y: 0, z: 0.58, w: 0.38, h: 0.14, chrome: 1 }],
+  },
+  lada: {
+    name: 'LADA 2105 (ŽIGULI)', dims: '4 130 × 1 620 × 1 446 mm · rozvor 2 424',
+    L: 4.13, W: 1.62, WB: 2.424, ohF: 0.75, tf: 1.365, tr: 1.321, R: 0.288, tyreW: 0.175, gc: 0.19,
+    pF: 16, pR: 16, noseTaper: 0.02, tumble: 0.86, shoulder: 0.04, bulge: 0.004,
+    belt: [[0, 0.60], [0.03, 0.74], [0.20, 0.78], [0.75, 0.82], [1.38, 0.88], [2.6, 0.91], [3.6, 0.93], [4.08, 0.95], [4.11, 0.92], [4.13, 0.78]],
+    cab: { cowl: 1.38, rf: 1.86, rr: 2.92, deck: 3.30, roofH: 1.446, wsBow: 0.02, rsBow: 0.03, side: [[1.42, 2.08], [2.13, 2.98]] },
+    bumpers: [{ s: 0.05, z0: 0.38, z1: 0.50, m: 'chrome', off: 0.06, depth: 0.03 }, { s: 0.045, z0: 0.40, z1: 0.52, m: 'chrome', rear: true, off: 0.06, depth: 0.03 }],
+    lights: [{ y: 0.52, z: 0.68, w: 0.36, h: 0.16, round: 0.1 }],
+    tail: [{ y: 0.53, z: 0.74, w: 0.44, h: 0.15, round: 0.1 }],
+    grille: [{ y: 0, z: 0.68, w: 0.64, h: 0.13 }],
+  },
+};
+
+const NEW_CARS = [
+  {
+    id: 'favorit', name: 'ŠKODA FAVORIT 136 L', dims: '3 815 × 1 620 × 1 415 mm · rozvor 2 450',
+    L: 3.815, W: 1.62, WB: 2.45, ohF: 0.73, tf: 1.39, tr: 1.35, R: 0.281, tyreW: 0.165, gc: 0.18,
+    pF: 12, pR: 16, noseTaper: 0.06, tumble: 0.84, shoulder: 0.05, bulge: 0.006,
+    belt: [[0, 0.55], [0.04, 0.68], [0.30, 0.73], [0.73, 0.79], [1.15, 0.86], [2.4, 0.93], [3.4, 0.96], [3.75, 0.97], [3.79, 0.92], [3.815, 0.74]],
+    cab: { cowl: 1.15, rf: 1.86, rr: 3.12, deck: 3.72, roofH: 1.415, wsBow: 0.03, rsBow: 0.06, side: [[1.20, 2.10], [2.16, 3.18]] },
+    bumpers: [{ s: 0.07, z0: 0.22, z1: 0.46, m: 'dark', off: 0.035 }, { s: 0.06, z0: 0.24, z1: 0.48, m: 'dark', rear: true, off: 0.035 }],
+    lights: [{ y: 0.50, z: 0.63, w: 0.38, h: 0.13, round: 0.08 }],
+    tail: [{ y: 0.62, z: 0.82, w: 0.20, h: 0.20, round: 0.1 }],
+    grille: [{ y: 0, z: 0.63, w: 0.56, h: 0.10 }],
+    liveries: [
+      { name: 'TOVÁRNÍ · ČERVENÁ', body: '#C0141C', rim: '#BFC3C8', rimStyle: 'dish' },
+      {
+        name: 'POLEP · BÍLO-ZELENÝ', era: 'styl Gr. A 1991', body: '#F3F3EF', rim: '#F4F4F4', rimStyle: 'multi', flaps: '#121315',
+        pod: { n: 4, gap: 0.26, s: 0.02 }, sun: { bg: '#3E9B35', fg: '#fff' },
+        paint(P) {
+          P.sidePoly([[0, 0.0], [1, 0.30], [1, 0.48], [0, 0.18]], '#3E9B35');
+          P.sidePoly([[0, 0.18], [1, 0.48], [1, 0.54], [0, 0.24]], '#121315');
+          P.topPoly([[0, 0.25], [1, 0.25], [1, 0.55], [0, 0.55]], '#3E9B35');
+          P.topPoly([[0, 0.55], [1, 0.55], [1, 0.65], [0, 0.65]], '#121315');
+          P.doorNumber(0.42, 0.78, 6, { r: 0.15, ring: '#3E9B35' });
+          P.sideText('RC-90', 0.72, 0.85, 0.17, '#3E9B35', { italic: 1 });
+          P.roofNumber(0.65, 6, { r: 0.2, ring: '#3E9B35' });
+        },
+      },
+      {
+        name: 'POLEP · ČERVENO-BÍLÝ', era: 'styl Gr. A 1993', body: '#D3121F', rim: '#F4F4F4', rimStyle: 'star', flaps: '#F3F3EF',
+        sun: { bg: '#F3F3EF', fg: '#D3121F' },
+        paint(P) {
+          P.sidePoly([[0.5, 1.3], [1, 1.3], [1, 0.0], [0.75, 0.0]], '#F3F3EF');
+          P.topFull(0.55, 1, '#F3F3EF');
+          P.topPoly([[0, 0], [0.30, 0], [0.30, 0.35], [0, 0.35]], '#F3F3EF');
+          P.sideText('RC-90', 0.33, 0.42, 0.22, '#fff', { italic: 1 });
+          P.doorNumber(0.62, 0.70, 19, { r: 0.15, ring: '#D3121F' });
+          P.roofNumber(0.65, 19, { r: 0.2, ring: '#D3121F' });
+        },
+      },
+    ],
+  },
+  {
+    id: 's130rs', name: 'ŠKODA 130 RS', dims: '4 020 × 1 670 × 1 340 mm · rozvor 2 400',
+    L: 4.02, W: 1.67, WB: 2.40, ohF: 0.78, tf: 1.40, tr: 1.37, R: 0.285, tyreW: 0.205, gc: 0.15,
+    pF: 9, pR: 9, noseTaper: 0.07, tumble: 0.76, shoulder: 0.05, flare: 0.045,
+    belt: [[0, 0.52], [0.04, 0.64], [0.30, 0.70], [0.78, 0.74], [1.50, 0.80], [2.5, 0.82], [3.3, 0.85], [3.97, 0.84], [4.02, 0.64]],
+    cab: { cowl: 1.50, rf: 2.02, rr: 2.60, deck: 3.36, roofH: 1.34, wsBow: 0.03, rsBow: -0.02, side: [[1.56, 2.55], [2.60, 3.10]] },
+    lights: [{ shape: 'round', y: 0.33, r: 0.07, z: 0.58 }, { shape: 'round', y: 0.53, r: 0.07, z: 0.58 }],
+    tail: [{ y: 0.55, z: 0.72, w: 0.22, h: 0.09 }],
+    grille: [{ y: 0, z: 0.56, w: 0.42, h: 0.06 }, { y: 0, z: 0.30, w: 0.9, h: 0.07 }],
+    liveries: [
+      { name: 'TOVÁRNÍ · BÍLÁ', body: '#F2F2EE', rim: '#BFC3C8', rimStyle: 'dish' },
+      {
+        name: 'POLEP · WORKS ČERVENÁ', era: 'styl Monte Carlo 1977', body: '#F2F2EE', rim: '#D9DBDE', rimStyle: 'star',
+        pod: { n: 2, gap: 0.55, s: 0.0, z: 0.50 },
+        paint(P) {
+          P.side(0, 1, 0.05, 0.22, '#C8102E');
+          P.topPoly([[0, 0.18], [1, 0.18], [1, 0.42], [0, 0.42]], '#C8102E');
+          P.doorNumber(0.45, 0.68, 30, { r: 0.16, bg: '#F2F2EE', ring: '#C8102E' });
+          P.sideText('RC-90', 0.73, 0.70, 0.15, '#C8102E', { italic: 1 });
+          P.topText('RALLYE', 0.18, 0.15, '#C8102E', {});
+        },
+      },
+      {
+        name: 'POLEP · ŽLUTO-ZELENÝ', era: 'styl 1981', body: '#F5C518', rim: '#1d1d1f', rimStyle: 'dish', flaps: '#1A6B34',
+        sun: { bg: '#1A6B34', fg: '#F5C518' },
+        paint(P) {
+          P.sidePoly([[0, 0], [0.62, 0], [0.48, 0.45], [0, 0.45]], '#1A6B34');
+          P.topFull(0, 0.30, '#1A6B34');
+          P.topPoly([[0.0, 0.0], [0.30, 0.0], [0.30, 0.20], [0.0, 0.20]], '#F5C518');
+          P.doorNumber(0.45, 0.72, 11, { r: 0.15 });
+          P.sideText('RC-90', 0.25, 0.22, 0.16, '#F5C518', { italic: 1 });
+          P.roofNumber(0.55, 11, { r: 0.2, ring: '#1A6B34' });
+        },
+      },
+    ],
+  },
+  {
+    id: 'golf2', name: 'VW GOLF II GTI', dims: '4 040 × 1 680 × 1 405 mm · rozvor 2 475',
+    L: 4.04, W: 1.68, WB: 2.475, ohF: 0.82, tf: 1.427, tr: 1.422, R: 0.289, tyreW: 0.185, gc: 0.18,
+    pF: 12, pR: 14, noseTaper: 0.05, tumble: 0.82, shoulder: 0.05,
+    belt: [[0, 0.58], [0.04, 0.70], [0.30, 0.76], [0.82, 0.81], [1.30, 0.88], [2.5, 0.92], [3.5, 0.95], [3.92, 0.97], [3.98, 0.94], [4.04, 0.74]],
+    cab: { cowl: 1.33, rf: 2.00, rr: 3.22, deck: 3.88, roofH: 1.405, rsBow: 0.08, side: [[1.39, 2.55], [2.60, 3.12]] },
+    bumpers: [{ s: 0.08, z0: 0.24, z1: 0.50, m: 'dark', off: 0.04 }, { s: 0.07, z0: 0.26, z1: 0.52, m: 'dark', rear: true, off: 0.04 }],
+    lights: [{ shape: 'round', y: 0.56, r: 0.088, z: 0.66 }, { shape: 'round', y: 0.33, r: 0.058, z: 0.66 }],
+    tail: [{ y: 0.58, z: 0.84, w: 0.34, h: 0.15 }],
+    grille: [{ y: 0, z: 0.66, w: 0.88, h: 0.15 }],
+    liveries: [
+      { name: 'TOVÁRNÍ · ČERVENÁ', body: '#B8101A', rim: '#C9CDD2', rimStyle: 'multi' },
+      {
+        name: 'POLEP · BÍLO-MODRO-ČERVENÝ', era: 'styl Gr. A 1987', body: '#F3F3EF', rim: '#F4F4F4', rimStyle: 'multi', flaps: '#13306B',
+        pod: { n: 4, gap: 0.26, s: 0.02 }, sun: { bg: '#13306B', fg: '#fff' },
+        paint(P) {
+          P.side(0, 1, 0.42, 0.52, '#13306B');
+          P.side(0, 1, 0.52, 0.58, '#D3121F');
+          P.topPoly([[0, 0.30], [1, 0.30], [1, 0.55], [0, 0.55]], '#13306B');
+          P.topPoly([[0, 0.55], [1, 0.55], [1, 0.68], [0, 0.68]], '#D3121F');
+          P.doorNumber(0.42, 0.80, 2, { r: 0.15, ring: '#13306B' });
+          P.sideText('RC-90', 0.66, 0.25, 0.20, '#13306B', { italic: 1 });
+          P.roofNumber(0.62, 2, { r: 0.2, ring: '#13306B' });
+        },
+      },
+      {
+        name: 'POLEP · ČERNO-ČERVENÝ', era: 'styl GTI Cup 1989', body: '#141518', metal: 1, rim: '#C9CDD2', rimStyle: 'multi', flaps: '#D3121F',
+        sun: { bg: '#D3121F', fg: '#fff' },
+        paint(P) {
+          P.side(0, 1, 0.10, 0.17, '#D3121F');
+          P.topPoly([[0, 0.55], [1, 0.55], [1, 0.75], [0, 0.75]], '#D3121F');
+          P.sideText('RC-90', 0.62, 0.55, 0.22, '#D3121F', { italic: 1 });
+          P.doorNumber(0.40, 0.75, 16, { r: 0.15 });
+          P.topText('GTI', 0.10, 0.16, '#D3121F', {});
+        },
+      },
+    ],
+  },
+  {
+    id: 'delta', name: 'LANCIA DELTA HF INTEGRALE EVO', dims: '3 898 × 1 767 × 1 365 mm · rozvor 2 479',
+    L: 3.898, W: 1.767, WB: 2.479, ohF: 0.762, tf: 1.506, tr: 1.504, R: 0.295, tyreW: 0.205, gc: 0.17,
+    pF: 14, pR: 14, noseTaper: 0.05, tumble: 0.82, shoulder: 0.045, flare: 0.05,
+    belt: [[0, 0.56], [0.04, 0.70], [0.30, 0.78], [0.762, 0.83], [1.28, 0.90], [2.4, 0.93], [3.3, 0.95], [3.82, 0.98], [3.87, 0.94], [3.898, 0.74]],
+    cab: { cowl: 1.28, rf: 1.86, rr: 3.12, deck: 3.80, roofH: 1.365, wsBow: 0.03, rsBow: 0.03, side: [[1.33, 2.08], [2.14, 2.90], [2.95, 3.18]] },
+    wing: { s: 3.14, h: 0.05, span: 0.94, chord: 0.24, tilt: 0.10 },
+    bumpers: [{ s: 0.07, z0: 0.20, z1: 0.46, m: 'body', off: 0.03 }, { s: 0.06, z0: 0.22, z1: 0.48, m: 'body', rear: true, off: 0.03 }],
+    lights: [{ shape: 'round', y: 0.38, r: 0.066, z: 0.625 }, { shape: 'round', y: 0.58, r: 0.066, z: 0.625 }],
+    tail: [{ y: 0.64, z: 0.84, w: 0.30, h: 0.14 }],
+    grille: [{ y: 0, z: 0.625, w: 1.38, h: 0.17, r: 0.02 }, { y: 0, z: 0.32, w: 0.75, h: 0.12, r: 0.03 }],
+    liveries: [
+      { name: 'TOVÁRNÍ · ČERVENÁ', body: '#B3121F', rim: '#C9CDD2', rimStyle: 'multi' },
+      {
+        name: 'POLEP · BÍLÝ S PRUHY', era: 'styl Gr. A 1992', body: '#F3F3EF', rim: '#F4F4F4', rimStyle: 'multi', flaps: '#0E2C6B',
+        pod: { n: 4, gap: 0.27, s: 0.02 }, sun: { bg: '#0E2C6B', fg: '#fff' },
+        paint(P) {
+          const b = (a, c, col) => P.sidePoly([[0, a], [1, a], [1, c], [0, c]], col);
+          b(0.58, 0.66, '#5BB1E3'); b(0.66, 0.73, '#0E2C6B'); b(0.73, 0.78, '#D3121F');
+          P.topPoly([[0, 0.20], [1, 0.20], [1, 0.42], [0, 0.42]], '#5BB1E3');
+          P.topPoly([[0, 0.42], [1, 0.42], [1, 0.62], [0, 0.62]], '#0E2C6B');
+          P.topPoly([[0, 0.62], [1, 0.62], [1, 0.76], [0, 0.76]], '#D3121F');
+          P.doorNumber(0.43, 0.40, 1, { r: 0.15, ring: '#0E2C6B' });
+          P.sideText('RC-90', 0.66, 0.40, 0.20, '#0E2C6B', { italic: 1 });
+          P.roofNumber(0.62, 1, { r: 0.2, ring: '#0E2C6B' });
+        },
+      },
+      {
+        name: 'POLEP · MODRO-ŽLUTÝ', era: 'styl Gr. A 1993', body: '#1D3E8C', rim: '#F4F4F4', rimStyle: 'star', flaps: '#F7C900',
+        sun: { bg: '#F7C900', fg: '#1D3E8C' },
+        paint(P) {
+          P.sidePoly([[0, 0], [1, 0.25], [1, 0.42], [0, 0.17]], '#F7C900');
+          P.topPoly([[0, 0], [0.25, 0], [0.32, 1], [0, 1]], '#F7C900');
+          P.sideText('RC-90', 0.60, 0.70, 0.20, '#F7C900', { italic: 1 });
+          P.doorNumber(0.42, 0.72, 4, { r: 0.15 });
+          P.topText('RC-90', 0.12, 0.18, '#1D3E8C', { italic: 1 });
+          P.roofNumber(0.62, 4, { r: 0.2, ring: '#F7C900' });
+        },
+      },
+    ],
+  },
+];
+
+for (const c of CARS) {
+  const g = GEO[c.id];
+  if (!g) continue;
+  delete c.axF; delete c.axR; delete c.track; delete c.wing; delete c.bumpers;
+  Object.assign(c, g, { abs: 1 });
+}
+for (const c of NEW_CARS) CARS.push(Object.assign(c, { abs: 1 }));
+
+// ===== liv2.js
+// Další 2 polepy pro každé auto
+(() => {
+  const W = '#F3F3EF', K = '#121315', R = '#D3121F';
+  const hBand = (P, h0, h1, col) => P.side(0, 1, h0, h1, col);
+  const tStripe = (P, f0, f1, col, s0 = 0, s1 = 1) => P.topPoly([[s0, f0], [s1, f0], [s1, f1], [s0, f1]], col);
+  const checker = (P, h0, h1, n, a, b) => { for (let i = 0; i < n; i++) for (let j = 0; j < 2; j++) P.side(i / n, (i + 1) / n, h0 + (h1 - h0) * j / 2, h0 + (h1 - h0) * (j + 1) / 2, (i + j) % 2 ? a : b); };
+  const swoosh = (P, a, b, rise, col) => P.sidePoly([[0, a], [1, a + rise], [1, b + rise], [0, b]], col);
+  const num = (P, n, ring, s = 0.43, h = 0.78) => { P.doorNumber(s, h, n, { r: 0.15, ring }); };
+  const roof = (P, n, ring, s = 0.58) => P.roofNumber(s, n, { r: 0.2, ring });
+
+  const X = {
+    sierra: [
+      { name: 'POLEP · BÍLO-MODRÝ', era: 'styl cestovní vozy 1988', body: W, rim: '#F4F4F4', rimStyle: 'multi', sun: { bg: '#13306B', fg: '#fff' },
+        paint(P) { hBand(P, 0, 0.38, '#13306B'); hBand(P, 0.38, 0.43, R); tStripe(P, 0.55, 0.85, '#13306B'); tStripe(P, 0.85, 0.95, R); num(P, 27, '#13306B', 0.43, 0.72); P.sideText('RC-90', 0.66, 0.70, 0.22, '#13306B', { italic: 1 }); roof(P, 27, '#13306B', 0.54); } },
+      { name: 'POLEP · BÍLO-MODRÝ WORKS', era: 'styl Gr. A 1990–91', body: W, bumper: '#1C3F94', rim: '#F6F6F6', rimStyle: 'star', flaps: K, wingCol: R,
+        sun: { bg: W, fg: R },
+        pod: { col: W, lamps: [{ x: 0.07, y: 0.15, z: 0.86, r: 0.11 }, { x: 0.07, y: -0.15, z: 0.86, r: 0.11 }, { x: 0.02, y: 0.45, z: 0.64, r: 0.10 }, { x: 0.02, y: -0.45, z: 0.64, r: 0.10 }], bridge: { x: 0.10, z: 0.76, w: 0.50, h: 0.16 } },
+        paint(P) {
+          const B = '#1C3F94';
+          P.side(0, 1, 0, 0.24, B); P.side(0, 1, 0.24, 0.265, W); P.side(0, 1, 0.265, 0.305, R);
+          P.topFull(0, 0.02, B);
+          P.sideText('RC-90', 0.66, 0.62, 0.30, R, { italic: 1, weight: 700 });
+          P.sideOval(0.82, 0.86, 0.13, 0.07, B, 'RC', '#fff');
+          P.sideText('RALLYE', 0.245, 0.80, 0.15, B, { italic: 1 });
+          P.topOval(0.235, 0.20, 0.07, B, 'RC-90', '#fff');
+          P.topText('RALLYE', 0.275, 0.13, R, { italic: 1 });
+        } },
+    ],
+    fiesta: [
+      { name: 'POLEP · MODRO-ŽLUTÝ', era: 'styl Gr. N 1991', body: '#1B3A8C', rim: '#F4F4F4', rimStyle: 'multi', flaps: '#F7C900', sun: { bg: '#F7C900', fg: '#1B3A8C' },
+        paint(P) { swoosh(P, 0.0, 0.14, 0.45, '#F7C900'); tStripe(P, 0.3, 0.6, '#F7C900', 0, 0.30); num(P, 15, '#F7C900', 0.45, 0.80); P.sideText('RC-90', 0.73, 0.88, 0.16, '#fff', { italic: 1 }); roof(P, 15, '#F7C900', 0.66); } },
+      { name: 'POLEP · ŠACHOVNICE', era: 'styl pohár 1990', body: W, rim: '#1d1d1f', rimStyle: 'multi', flaps: K, sun: { bg: K, fg: '#fff' },
+        paint(P) { checker(P, 0.16, 0.30, 30, K, W); tStripe(P, 0.2, 0.5, R); num(P, 9, K, 0.45, 0.80); P.sideText('RC-90', 0.73, 0.88, 0.16, R, { italic: 1 }); roof(P, 9, R, 0.66); } },
+    ],
+    e34: [
+      { name: 'POLEP · ORANŽOVÝ', era: 'styl cestovní vozy 1991', body: '#F07A1A', rim: '#F4F4F4', rimStyle: 'multi', sun: { bg: K, fg: '#F07A1A' },
+        paint(P) { hBand(P, 0.08, 0.14, K); num(P, 44, K, 0.40, 0.70); P.sideText('RC-90', 0.62, 0.42, 0.26, '#fff', { italic: 1, stroke: K, strokeW: 24 }); P.topText('RC-90', 0.17, 0.30, K, { italic: 1 }); roof(P, 44, K, 0.55); } },
+      { name: 'POLEP · STŘÍBRNO-MODRÝ', era: 'styl 1989', body: '#C9CDD2', metal: 1, rim: '#C9CDD2', rimStyle: 'star', sun: { bg: '#123E8C', fg: '#fff' },
+        paint(P) { swoosh(P, 0.0, 0.35, 0.25, '#123E8C'); swoosh(P, 0.35, 0.40, 0.25, '#fff'); tStripe(P, 0.0, 0.35, '#123E8C'); num(P, 12, '#123E8C', 0.40, 0.82); P.sideText('RC-90', 0.62, 0.86, 0.18, '#123E8C', { italic: 1 }); roof(P, 12, '#123E8C', 0.55); } },
+    ],
+    mx5: [
+      { name: 'POLEP · ŽLUTO-ČERNÝ', era: 'styl klubový pohár 1993', body: '#F6C400', rim: '#1d1d1f', rimStyle: 'multi', rollbar: 1,
+        paint(P) { tStripe(P, 0.15, 0.40, K); hBand(P, 0, 0.18, K); num(P, 21, K, 0.50, 0.70); P.sideText('RC-90', 0.86, 0.82, 0.15, K, { italic: 1 }); } },
+      { name: 'POLEP · ZELENÝ S KRÉMOVOU', era: 'styl klasické závody', body: '#0F4D2E', rim: '#D9DBDE', rimStyle: 'dish', rollbar: 1,
+        paint(P) { tStripe(P, 0.0, 0.25, '#EFE6C8'); P.doorNumber(0.50, 0.62, 7, { r: 0.17, bg: '#EFE6C8' }); P.sideText('RC-90', 0.86, 0.82, 0.15, '#EFE6C8', { italic: 1 }); } },
+    ],
+    c2: [
+      { name: 'POLEP · ČERNO-ŽLUTÝ', era: 'styl Junior 2005', body: K, metal: 1, rim: '#F7C900', rimStyle: 'multi', flaps: '#F7C900', sun: { bg: '#F7C900', fg: K },
+        paint(P) { swoosh(P, -0.05, 0.12, 0.6, '#F7C900'); tStripe(P, 0.3, 0.7, '#F7C900', 0, 0.26); num(P, 31, '#F7C900', 0.42, 0.80); P.sideText('RC-90', 0.72, 0.85, 0.18, '#F7C900', { italic: 1 }); roof(P, 31, '#F7C900', 0.66); } },
+      { name: 'POLEP · BÍLO-ZELENÝ', era: 'styl R2 2008', body: W, rim: '#F4F4F4', rimStyle: 'star', flaps: '#2F9E44', sun: { bg: '#2F9E44', fg: '#fff' },
+        paint(P) { P.sidePoly([[0, 0], [0.55, 0], [0.30, 1.3], [0, 1.3]], '#2F9E44'); P.topFull(0, 0.26, '#2F9E44'); num(P, 8, '#2F9E44', 0.62, 0.70); P.sideText('RC-90', 0.17, 0.45, 0.18, '#fff', { italic: 1 }); P.topText('RC-90', 0.13, 0.20, '#fff', { italic: 1 }); roof(P, 8, '#2F9E44', 0.66); } },
+    ],
+    fulvia: [
+      { name: 'POLEP · MODRÁ S PRUHEM', era: 'styl 1969', body: '#1E3F7A', rim: '#D9DBDE', rimStyle: 'dish', chromeTrim: 1,
+        paint(P) { tStripe(P, 0.0, 0.18, W); hBand(P, 0.10, 0.15, W); P.doorNumber(0.46, 0.60, 22, { r: 0.17 }); P.sideText('RC-90', 0.72, 0.62, 0.15, W, { italic: 1 }); } },
+      { name: 'POLEP · TRIKOLÓRA', era: 'styl 1971', body: W, rim: '#D9DBDE', rimStyle: 'dish', pod: { n: 2, gap: 0.62, s: 0.0, z: 0.50 },
+        paint(P) { tStripe(P, 0.0, 0.18, '#C8102E'); tStripe(P, 0.18, 0.30, W); tStripe(P, 0.30, 0.48, '#009246'); hBand(P, 0.10, 0.16, '#009246'); hBand(P, 0.16, 0.20, W); hBand(P, 0.20, 0.26, '#C8102E'); P.doorNumber(0.46, 0.62, 5, { r: 0.17, ring: '#C8102E' }); P.sideText('RC-90', 0.72, 0.62, 0.15, '#009246', { italic: 1 }); } },
+    ],
+    lada: [
+      { name: 'POLEP · ŽLUTO-MODRÝ', era: 'styl 1985', body: '#F6C400', rim: '#F4F4F4', rimStyle: 'dish', flaps: '#1F4FA2', sun: { bg: '#1F4FA2', fg: '#F6C400' },
+        paint(P) { hBand(P, 0.0, 0.35, '#1F4FA2'); tStripe(P, 0.2, 0.55, '#1F4FA2'); num(P, 17, '#1F4FA2', 0.40, 0.75); P.sideText('RC-90', 0.66, 0.85, 0.18, '#1F4FA2', { italic: 1 }); roof(P, 17, '#1F4FA2', 0.55); } },
+      { name: 'POLEP · BÍLO-ZELENÝ', era: 'styl 1980', body: W, rim: '#F4F4F4', rimStyle: 'dish', flaps: K, pod: { n: 2, gap: 0.6, s: 0.0, z: 0.55 }, sun: { bg: '#0B6B3A', fg: '#fff' },
+        paint(P) { swoosh(P, 0.0, 0.28, 0.35, '#0B6B3A'); P.topFull(0, 0.30, '#0B6B3A'); num(P, 4, '#0B6B3A', 0.42, 0.82); P.sideText('RC-90', 0.66, 0.92, 0.15, '#0B6B3A', { italic: 1 }); P.topText('RC-90', 0.16, 0.22, '#fff', { italic: 1 }); } },
+    ],
+    favorit: [
+      { name: 'POLEP · ŽLUTO-ČERNÝ', era: 'styl 1994', body: '#F6C400', rim: '#1d1d1f', rimStyle: 'multi', flaps: K, sun: { bg: K, fg: '#F6C400' },
+        paint(P) { hBand(P, 0.0, 0.30, K); swoosh(P, 0.30, 0.36, 0.35, K); tStripe(P, 0.15, 0.45, K); num(P, 23, K, 0.42, 0.80); P.sideText('RC-90', 0.72, 0.88, 0.16, K, { italic: 1 }); roof(P, 23, K, 0.65); } },
+      { name: 'POLEP · BÍLO-MODRÝ', era: 'styl 1992', body: W, rim: '#F4F4F4', rimStyle: 'multi', flaps: '#1F4FA2', pod: { n: 4, gap: 0.26, s: 0.02 }, sun: { bg: '#1F4FA2', fg: '#fff' },
+        paint(P) { swoosh(P, 0.0, 0.25, 0.45, '#1F4FA2'); swoosh(P, 0.25, 0.30, 0.45, R); tStripe(P, 0.0, 0.40, '#1F4FA2', 0, 0.30); num(P, 10, '#1F4FA2', 0.42, 0.80); P.sideText('RC-90', 0.72, 0.92, 0.15, '#1F4FA2', { italic: 1 }); roof(P, 10, '#1F4FA2', 0.65); } },
+    ],
+    s130rs: [
+      { name: 'POLEP · BÍLÝ S MODROU', era: 'styl 1976', body: W, rim: '#D9DBDE', rimStyle: 'star',
+        paint(P) { tStripe(P, 0.0, 0.30, '#1F4FA2'); hBand(P, 0.10, 0.24, '#1F4FA2'); P.doorNumber(0.45, 0.68, 41, { r: 0.16, ring: '#1F4FA2' }); P.sideText('RC-90', 0.73, 0.70, 0.15, '#1F4FA2', { italic: 1 }); } },
+      { name: 'POLEP · ORANŽOVO-BÍLÝ', era: 'styl 1979', body: '#EE7A1B', rim: '#F4F4F4', rimStyle: 'dish', pod: { n: 2, gap: 0.55, s: 0.0, z: 0.50 }, sun: { bg: W, fg: '#EE7A1B' },
+        paint(P) { P.topFull(0.45, 0.62, W); hBand(P, 0.55, 0.62, W); P.doorNumber(0.45, 0.68, 13, { r: 0.16 }); P.sideText('RC-90', 0.25, 0.30, 0.16, W, { italic: 1 }); P.topText('RALLYE', 0.18, 0.15, W, {}); } },
+    ],
+    golf2: [
+      { name: 'POLEP · ŽLUTO-MODRÝ', era: 'styl Gr. A 1989', body: '#F6C400', rim: '#F4F4F4', rimStyle: 'multi', flaps: '#13306B', sun: { bg: '#13306B', fg: '#F6C400' },
+        paint(P) { swoosh(P, 0.0, 0.30, 0.4, '#13306B'); tStripe(P, 0.0, 0.35, '#13306B'); num(P, 14, '#13306B', 0.42, 0.82); P.sideText('RC-90', 0.68, 0.90, 0.16, '#13306B', { italic: 1 }); roof(P, 14, '#13306B', 0.62); } },
+      { name: 'POLEP · BÍLO-ZELENÝ', era: 'styl 1986', body: W, rim: '#1d1d1f', rimStyle: 'multi', flaps: K, pod: { n: 2, gap: 0.6, s: 0.0, z: 0.55 }, sun: { bg: '#0B6B3A', fg: '#fff' },
+        paint(P) { hBand(P, 0.0, 0.25, '#0B6B3A'); hBand(P, 0.25, 0.30, K); tStripe(P, 0.55, 0.80, '#0B6B3A'); num(P, 25, '#0B6B3A', 0.42, 0.75); P.sideText('RC-90', 0.68, 0.80, 0.18, '#0B6B3A', { italic: 1 }); roof(P, 25, '#0B6B3A', 0.62); } },
+    ],
+    delta: [
+      { name: 'POLEP · ČERVENO-BÍLÝ', era: 'styl Gr. A 1987', body: W, rim: '#F4F4F4', rimStyle: 'multi', flaps: R, pod: { n: 4, gap: 0.27, s: 0.02 }, sun: { bg: R, fg: '#fff' },
+        paint(P) { hBand(P, 0.0, 0.45, R); P.topFull(0, 0.33, R); num(P, 7, R, 0.43, 0.75); P.sideText('RC-90', 0.66, 0.25, 0.20, '#fff', { italic: 1 }); P.topText('RC-90', 0.16, 0.22, '#fff', { italic: 1 }); roof(P, 7, R, 0.62); } },
+      { name: 'POLEP · BÍLO-TYRKYSOVÝ', era: 'styl Gr. A 1990', body: W, rim: '#F4F4F4', rimStyle: 'star', flaps: '#0F8C8C', sun: { bg: '#0F8C8C', fg: '#fff' },
+        paint(P) { swoosh(P, -0.1, 0.18, 0.6, '#0F8C8C'); swoosh(P, 0.18, 0.26, 0.6, '#123E8C'); tStripe(P, 0.0, 0.30, '#0F8C8C'); tStripe(P, 0.30, 0.45, '#123E8C'); num(P, 2, '#0F8C8C', 0.43, 0.80); P.sideText('RC-90', 0.66, 0.92, 0.16, '#0F8C8C', { italic: 1 }); roof(P, 2, '#0F8C8C', 0.62); } },
+    ],
+  };
+  for (const c of CARS) if (X[c.id]) c.liveries.push(...X[c.id]);
+})();
+
+// ===== api.js
+// ---------------------------------------------------------------- veřejné API (aplikace i web)
+(() => {
+  const LIVKEY = { f: 0, none: 0, '1': 1, '2': 2, '3': 3, '4': 4, stripes: 1, rally: 1, twotone: 1 };
+  const WHEEL_COLORS = ['#C9CDD2', '#F6F6F6', '#D9B44A', '#4A4D52', '#1d1d1f'];
+  const byId = id => CARS.find(c => c.id === id);
+  function decode(style) {
+    const p = String(style || '').split(';');
+    return { model: p[0], liv: LIVKEY[p[1]] ?? 0, number: (p[3] || '').replace(/\D/g, '').slice(0, 3), wheel: p[4] || '', wcol: p[5] === undefined || p[5] === '' ? -1 : +p[5] };
+  }
+  function resolve(style, colorHex) {
+    const d = decode(style);
+    const car = byId(d.model);
+    if (!car) return null;
+    const base = car.liveries[Math.min(d.liv, car.liveries.length - 1)];
+    const l = Object.assign({}, base);
+    if (d.liv === 0 && colorHex) l.body = colorHex;
+    if (d.wheel) l.rimStyle = d.wheel;
+    if (d.wcol >= 0) l.rim = WHEEL_COLORS[d.wcol] || l.rim;
+    if (d.number) l.numberOverride = d.number;
+    return { car, l };
+  }
+  const VIEWS = {
+    preview: () => ({}),
+    top: () => ({ ortho: 5.2, top: 1 }),
+  };
+  /** Vykreslí auto podle stylu, vrátí PNG data-URL (nebo null, když model neexistuje). */
+  RC90.renderStyle = (style, colorHex, view, w, h) => {
+    const r = resolve(style, colorHex);
+    if (!r) return null;
+    return RC90.render(r.car, r.l, w, h, (VIEWS[view] || VIEWS.preview)());
+  };
+  RC90.has = model => !!byId(model);
+  RC90.WHEEL_COLORS = WHEEL_COLORS;
+})();
+
+} catch (e) { console.warn("RC90 3D", e); }
+</script>
 <style>
 /*
   RC-90 – prohlížení týmových jízd na počítači.
@@ -84,6 +1473,11 @@ tr.sel { background: #1c1810; }
 .leaflet-bar a { background: var(--btn) !important; color: var(--digit) !important; border-color: var(--bezel-l) !important; }
 .multi { display: grid; grid-template-columns: 1fr 320px; gap: 12px; }
 .multi > .box > .in { height: 100%; }
+.carcell { display: inline-flex; align-items: center; gap: 6px; }
+.carcell svg { flex: none; }
+.carmk { background: none; border: none; }
+.carmk .halo { position: absolute; left: 50%; top: 50%; width: 52px; height: 52px; margin: -26px 0 0 -26px; border-radius: 50%; opacity: .45; border: 2px solid #000; }
+.carmk svg { position: relative; }
 .leaflet-tooltip { background: #111 !important; color: #f4f4ec !important; border: 1px solid #555 !important; border-radius: 0 !important; font-family: "Barlow Condensed", sans-serif; font-size: 16px; box-shadow: none !important; }
 .leaflet-tooltip-right::before, .leaflet-tooltip-left::before { display: none; }
 @media (max-width: 900px) { .multi { grid-template-columns: 1fr; } #mmap { height: 60vh; } }
@@ -281,10 +1675,144 @@ async function loadProfiles() {
 async function loadRallies(force) {
   if (ralliesCache && !force) return ralliesCache;
   await loadProfiles();
-  ralliesCache = await api("/rest/v1/rallies?select=id,user_id,device,name,start_at,end_at,total_ms,distance_m,max_kmh,point_count&order=start_at.desc&limit=1000");
+  const base = "/rest/v1/rallies?order=start_at.desc&limit=1000&select=id,user_id,device,name,start_at,end_at,total_ms,distance_m,max_kmh,point_count";
+  try { ralliesCache = await api(base + ",car_name,car_body,car_color"); }
+  catch (e) { if (e.status === 400) ralliesCache = await api(base); else throw e; }
   return ralliesCache;
 }
 const nameOf = (uid) => (profiles[uid] && profiles[uid].username || "?").toUpperCase();
+// ---------------------------------------------------------------------------
+// Siluety aut shora – stejná geometrie jako v aplikaci (CarShapes)
+// ---------------------------------------------------------------------------
+// [label, délka m, w, nose, tail, cabF, cabR, inset, roofF, roofR, open, tf, tr]
+const CAR_SPECS = Object.fromEntries(Object.entries({
+  sierra:   ["Ford Sierra", 4.46, 0.381, 0.26, 0.22, -0.13, 0.40, 0.042, -0.02, 0.17, false, 0.06, 0.04],
+  fiesta:   ["Ford Fiesta XR2i", 3.80, 0.429, 0.30, 0.14, -0.12, 0.43, 0.045, 0.00, 0.37, false, 0.05, 0.03],
+  e34:      ["BMW E34", 4.72, 0.371, 0.15, 0.16, -0.15, 0.27, 0.040, -0.05, 0.16, false, 0.03, 0.03],
+  mx5:      ["Mazda MX-5 NA", 3.97, 0.422, 0.50, 0.36, -0.04, 0.24, 0.050, 0.00, 0.00, true, 0.10, 0.06],
+  c2:       ["Citroën C2", 3.67, 0.452, 0.34, 0.18, -0.17, 0.44, 0.045, -0.05, 0.38, false, 0.06, 0.02],
+  fulvia:   ["Lancia Fulvia", 3.98, 0.391, 0.34, 0.28, -0.09, 0.30, 0.045, 0.01, 0.20, false, 0.07, 0.06],
+  lada:     ["Lada 2105", 4.13, 0.392, 0.14, 0.14, -0.14, 0.27, 0.040, -0.05, 0.17, false, 0.02, 0.02],
+  favorit:  ["Škoda Favorit", 3.815, 0.425, 0.18, 0.12, -0.15, 0.40, 0.042, -0.04, 0.34, false, 0.04, 0.02],
+  s130rs:   ["Škoda 130 RS", 4.02, 0.415, 0.30, 0.26, -0.11, 0.33, 0.045, -0.02, 0.15, false, 0.05, 0.05],
+  golf2:    ["VW Golf II GTI", 4.04, 0.416, 0.16, 0.14, -0.16, 0.45, 0.042, -0.05, 0.32, false, 0.03, 0.03],
+  delta:    ["Lancia Delta Integrale", 3.898, 0.453, 0.12, 0.12, -0.16, 0.48, 0.040, -0.06, 0.32, false, 0.02, 0.02],
+  hatch3:   ["Hatchback", 3.90, 0.44, 0.30, 0.16, -0.13, 0.42, 0.045, -0.03, 0.36, false, 0.04, 0.03],
+  liftback: ["Liftback", 4.40, 0.41, 0.26, 0.20, -0.15, 0.38, 0.045, -0.05, 0.16, false, 0.04, 0.03],
+  sedan:    ["Sedan", 4.60, 0.38, 0.20, 0.18, -0.17, 0.25, 0.040, -0.07, 0.15, false, 0.04, 0.03],
+  coupe:    ["Kupé", 4.10, 0.40, 0.34, 0.30, -0.10, 0.26, 0.045, -0.01, 0.17, false, 0.04, 0.03],
+  roadster: ["Roadster", 3.95, 0.43, 0.46, 0.34, -0.08, 0.20, 0.050, 0.00, 0.00, true, 0.04, 0.03],
+  wagon:    ["Kombi", 4.55, 0.38, 0.20, 0.10, -0.17, 0.45, 0.040, -0.07, 0.42, false, 0.04, 0.03],
+}).map(([k, v]) => [k, { label: v[0], scale: v[1] / 4.4, w: v[2], nose: v[3], tail: v[4], cabF: v[5], cabR: v[6], inset: v[7], roofF: v[8], roofR: v[9], open: v[10], tf: v[11], tr: v[12] }]));
+const LIVERIES = ["none", "stripes", "rally", "twotone"];
+/** Vzhled auta: "model;polep;#doplňková;číslo" (stejně jako v aplikaci). */
+function decodeStyle(str) {
+  const p = String(str || "").split(";");
+  const model = CAR_SPECS[p[0]] ? p[0] : "hatch3";
+  const livery = LIVERIES.includes(p[1]) ? p[1] : (["1", "2", "3", "4"].includes(p[1]) ? "rally" : "none");
+  const accent = /^#[0-9a-fA-F]{6}$/.test(p[2] || "") ? p[2] : "#ffffff";
+  const number = String(p[3] || "").replace(/\D/g, "").slice(0, 3);
+  return { model, livery, accent, number };
+}
+function rrect(x0, x1, y0, y1, rf, rr, seg = 6) {
+  const lim = Math.min((x1 - x0) / 2, (y1 - y0) / 2);
+  rf = Math.min(rf, lim); rr = Math.min(rr, lim);
+  const pts = [];
+  const arc = (cx, cy, r, a0, a1) => { for (let i = 0; i <= seg; i++) { const a = a0 + (a1 - a0) * i / seg; pts.push([cx + r * Math.cos(a), cy + r * Math.sin(a)]); } };
+  const pi = Math.PI;
+  arc(x0 + rf, y0 + rf, rf, pi, 1.5 * pi); arc(x1 - rf, y0 + rf, rf, 1.5 * pi, 2 * pi);
+  arc(x1 - rr, y1 - rr, rr, 0, 0.5 * pi); arc(x0 + rr, y1 - rr, rr, 0.5 * pi, pi);
+  return pts;
+}
+const clamp01 = (v) => Math.max(0, Math.min(1, v));
+function carParts(style) {
+  const st = decodeStyle(style), s = CAR_SPECS[st.model], h = s.w / 2, cf = s.cabF, out = [];
+  const taper = (pts) => pts.map(([x, y]) => [x * (1 - s.tf * clamp01((-y - 0.25) / 0.25) - s.tr * clamp01((y - 0.25) / 0.25)), y]);
+  const add = (k, pts) => out.push([k, taper(pts)]);
+  add("mirror", rrect(-h - 0.035, -h + 0.01, cf + 0.01, cf + 0.045, 0.01, 0.01, 2));
+  add("mirror", rrect(h - 0.01, h + 0.035, cf + 0.01, cf + 0.045, 0.01, 0.01, 2));
+  add("body", rrect(-h, h, -0.5, 0.5, s.nose * s.w, s.tail * s.w));
+  if (st.livery === "rally") add("accent", rrect(-h, h, -0.5, cf - 0.015, s.nose * s.w, 0.01, 6));
+  add("light", rrect(-h + 0.035, -h + 0.13, -0.485, -0.455, 0.012, 0.012, 2));
+  add("light", rrect(h - 0.13, h - 0.035, -0.485, -0.455, 0.012, 0.012, 2));
+  if (s.open) {
+    add("glass", rrect(-h + s.inset, h - s.inset, cf, cf + 0.035, 0.03, 0.01, 3));
+    add("cockpit", rrect(-h + s.inset + 0.01, h - s.inset - 0.01, cf + 0.05, s.cabR, 0.03, 0.08, 4));
+    const sw = (s.w - 2 * s.inset - 0.06) / 2;
+    add("seat", rrect(-h + s.inset + 0.025, -h + s.inset + 0.025 + sw, cf + 0.08, cf + 0.20, 0.02, 0.02, 2));
+    add("seat", rrect(h - s.inset - 0.025 - sw, h - s.inset - 0.025, cf + 0.08, cf + 0.20, 0.02, 0.02, 2));
+  } else {
+    add("glass", rrect(-h + s.inset, h - s.inset, cf, s.cabR, 0.18 * s.w, 0.12 * s.w, 4));
+    add(st.livery === "twotone" ? "accent" : "roof", rrect(-h + s.inset + 0.025, h - s.inset - 0.025, s.roofF, s.roofR, 0.05 * s.w, 0.05 * s.w, 3));
+  }
+  if (st.livery === "stripes") {
+    const sw = s.w * 0.075, gap = s.w * 0.035;
+    const ranges = s.open ? [[-0.495, cf - 0.01], [s.cabR + 0.01, 0.495]] : [[-0.495, cf - 0.01], [s.roofF + 0.01, s.roofR - 0.01], [s.cabR + 0.01, 0.495]];
+    for (const [y0, y1] of ranges) {
+      if (y1 - y0 < 0.02) continue;
+      add("accent", rrect(-gap - sw, -gap, y0, y1, 0, 0, 1));
+      add("accent", rrect(gap, gap + sw, y0, y1, 0, 0, 1));
+    }
+  }
+  if (st.livery === "twotone" && s.cabR < 0.42) add("accent", rrect(-h + 0.02, h - 0.02, s.cabR + 0.015, 0.49, 0.02, s.tail * s.w * 0.8, 4));
+  let roundel = null;
+  if (st.livery === "rally" && !s.open) {
+    const r = Math.min(s.w * 0.28, (s.roofR - s.roofF) * 0.45);
+    if (r > 0.02) {
+      const cy = (s.roofF + s.roofR) / 2;
+      add("roundel", Array.from({ length: 20 }, (_, i) => { const a = 2 * Math.PI * i / 20; return [r * Math.cos(a), cy + r * Math.sin(a)]; }));
+      if (st.number) roundel = { cy, r };
+    }
+  }
+  return { parts: out, roundel, st, spec: s };
+}
+function roofColor(hex) {
+  const n = parseInt(String(hex || "#c8102e").slice(1), 16) || 0;
+  const r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+  const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+  const f = (v) => lum < 60 ? Math.min(255, v + 40) : Math.floor(v * 0.86);
+  return "rgb(" + f(r) + "," + f(g) + "," + f(b) + ")";
+}
+/** 3D obrázek auta (data-URL) – vykreslí se jednou a pamatuje; null = použít SVG. */
+const car3dCache = new Map();
+function car3dUrl(style, color, view, px) {
+  try {
+    if (!window.RC90 || !RC90.renderStyle || !RC90.has(String(style || "").split(";")[0])) return null;
+    const k = style + "|" + color + "|" + view + "|" + px;
+    if (!car3dCache.has(k)) car3dCache.set(k, view === "top" ? RC90.renderStyle(style, color, "top", px, px) : RC90.renderStyle(style, color, "preview", px, Math.round(px * 0.633)));
+    return car3dCache.get(k);
+  } catch (e) { console.warn("RC90 3D", e); window.RC90 = null; return null; }
+}
+/** Auto do tabulky (3D bokem, jinak SVG). */
+function carThumb(style, color, size) {
+  const u = car3dUrl(style, color || "#c8102e", "preview", 240);
+  return u ? `<img src="${u}" alt="" style="height:${Math.round(size * 1.6)}px;display:block">` : carSvg(style, color, size, 90);
+}
+/** Auto na mapu shora (3D, jinak SVG), size = délka 4,4 m v px. */
+function carTop(style, color, size, heading, faded) {
+  const u = car3dUrl(style, color || "#c8102e", "top", 192);
+  if (!u) return carSvg(style, faded ? "#888" : color, size, heading);
+  const side = Math.round(size * 5.2 / 4.4);
+  return `<img src="${u}" alt="" width="${side}" height="${side}" style="display:block;transform:rotate(${heading || 0}deg);${faded ? "opacity:.55;" : ""}">`;
+}
+/** SVG siluety: size = délka referenčního auta (4,4 m) v px, heading ve stupních (0 = sever). */
+function carSvg(style, color, size, heading = 0) {
+  const { parts, roundel, st, spec } = carParts(style);
+  const L = size * spec.scale, box = Math.ceil(size * 1.1) + 4, c = box / 2;
+  const fills = { body: color, mirror: color, roof: roofColor(color), glass: "#1a1f26", light: "#f6f1c1", cockpit: "#282828", seat: "#464646", accent: st.accent, roundel: "#fafafa" };
+  let svg = parts.map(([k, pts]) => {
+    const d = pts.map(([x, y]) => (c + x * L).toFixed(1) + "," + (c + y * L).toFixed(1)).join(" ");
+    const ow = Math.min(3, Math.max(1, size / 22));
+    const sw = k === "body" || k === "mirror" ? ow : ow * 0.5;
+    return `<polygon points="${d}" fill="${fills[k]}" stroke="#000" stroke-width="${sw.toFixed(2)}" stroke-linejoin="round"/>`;
+  }).join("");
+  if (roundel && roundel.r * L >= 6) {
+    const fs = (roundel.r * L * 1.15).toFixed(1);
+    svg += `<text x="${c}" y="${(c + roundel.cy * L).toFixed(1)}" font-size="${fs}" font-weight="700" font-family="Arial, sans-serif" text-anchor="middle" dominant-baseline="central" fill="#000">${st.number}</text>`;
+  }
+  return `<svg width="${box}" height="${box}" viewBox="0 0 ${box} ${box}" style="transform:rotate(${heading || 0}deg);display:block">${svg}</svg>`;
+}
+
 // barva člena podle jména – stejný výpočet jako v aplikaci
 function colorByName(name) {
   let h = 0;
@@ -299,7 +1827,11 @@ async function renderList() {
   try { rows = await loadRallies(false); } catch (e) { return showError(e); }
   const filter = store.get("filter") || "all";
   const people = Object.values(profiles).sort((a, b) => a.username.localeCompare(b.username));
-  const shown = rows.filter((r) => filter === "all" || (filter === "me" ? r.user_id === session.user_id : r.user_id === filter));
+  const byPerson = rows.filter((r) => filter === "all" || (filter === "me" ? r.user_id === session.user_id : r.user_id === filter));
+  const carNames = [...new Set(byPerson.map((r) => r.car_name).filter(Boolean))].sort((a, b) => a.localeCompare(b, "cs"));
+  let carFilter = store.get("carFilter") || "";
+  if (carFilter && !carNames.includes(carFilter)) carFilter = "";
+  const shown = byPerson.filter((r) => !carFilter || r.car_name === carFilter);
   const totKm = shown.reduce((a, r) => a + r.distance_m, 0), totMs = shown.reduce((a, r) => a + r.total_ms, 0);
   app.innerHTML = `
   <div class="toolbar">
@@ -309,6 +1841,7 @@ async function renderList() {
       <option value="me">Jen moje</option>
       ${people.map((p) => `<option value="${esc(p.id)}">${esc(p.username.toUpperCase())}</option>`).join("")}
     </select>
+    ${carNames.length ? `<select id="carFlt"><option value="">Všechna auta</option>${carNames.map((c) => `<option>${esc(c)}</option>`).join("")}</select>` : ""}
     <button id="reload">Obnovit</button>
     <button id="live" class="go">Živá mapa týmu</button>
     <button id="multi" class="warn" ${selected.size ? "" : "disabled"}>Vybrané na mapě (${selected.size})</button>
@@ -319,12 +1852,13 @@ async function renderList() {
   <div class="box"><div class="in" style="padding:4px 8px">
   ${shown.length === 0 ? `<div class="hint" style="padding:16px">Zatím žádné jízdy. Odesílají se z aplikace po každé rally, když je internet.</div>` : `
   <table>
-    <thead><tr><th class="ck"><input type="checkbox" id="ckAll" title="Vybrat vše"></th><th>Datum</th><th>Jezdec</th><th>Název</th><th class="num">Čas</th><th class="num">Km</th><th class="num hide-s">Ø km/h</th><th class="num hide-s">Max</th><th class="hide-s">Zařízení</th></tr></thead>
+    <thead><tr><th class="ck"><input type="checkbox" id="ckAll" title="Vybrat vše"></th><th>Datum</th><th>Jezdec</th><th class="hide-s">Auto</th><th>Název</th><th class="num">Čas</th><th class="num">Km</th><th class="num hide-s">Ø km/h</th><th class="num hide-s">Max</th><th class="hide-s">Zařízení</th></tr></thead>
     <tbody>${shown.map((r) => `
       <tr data-id="${esc(r.id)}" class="${selected.has(r.id) ? "sel" : ""}">
         <td class="ck"><input type="checkbox" data-ck="${esc(r.id)}" ${selected.has(r.id) ? "checked" : ""}></td>
         <td class="mono">${esc(dt(r.start_at))}</td>
         <td><span class="dot" style="background:${esc(colorOf(r.user_id))}"></span>${esc(nameOf(r.user_id))}</td>
+        <td class="hide-s">${r.car_name ? `<span class="carcell">${carThumb(r.car_body, r.car_color, 26)}<span>${esc(r.car_name)}</span></span>` : `<span class="muted">—</span>`}</td>
         <td>${esc(r.name)}</td>
         <td class="num mono">${hms(r.total_ms)}</td>
         <td class="num mono">${km(r.distance_m)}</td>
@@ -336,6 +1870,7 @@ async function renderList() {
   </div></div>`;
   $("#flt").value = filter;
   $("#flt").onchange = (e) => { store.set("filter", e.target.value); renderList(); };
+  if ($("#carFlt")) { $("#carFlt").value = carFilter; $("#carFlt").onchange = (e) => { store.set("carFilter", e.target.value); renderList(); }; }
   $("#reload").onclick = async () => { ralliesCache = null; renderList(); };
   $("#live").onclick = () => { location.hash = "live"; };
   app.querySelectorAll("tbody tr").forEach((tr) => tr.onclick = (e) => {
@@ -385,7 +1920,7 @@ async function renderDetail(id) {
     <button id="csv" ${pts.length ? "" : "disabled"}>CSV</button>
   </div>
   <div class="title">${esc(r.name)}</div>
-  <div class="hint" style="margin-bottom:12px"><span class="dot" style="background:${esc(colorOf(r.user_id))}"></span>${esc(nameOf(r.user_id))} · ${esc(dt(r.start_at))}${r.end_at ? " – " + esc(new Date(r.end_at).toLocaleTimeString("cs-CZ", { hour: "2-digit", minute: "2-digit" })) : ""} · ${esc(r.device || "")}</div>
+  <div class="hint" style="margin-bottom:12px"><span class="dot" style="background:${esc(colorOf(r.user_id))}"></span>${esc(nameOf(r.user_id))}${r.car_name ? " · " + esc(r.car_name) : ""} · ${esc(dt(r.start_at))}${r.end_at ? " – " + esc(new Date(r.end_at).toLocaleTimeString("cs-CZ", { hour: "2-digit", minute: "2-digit" })) : ""} · ${esc(r.device || "")}</div>
   <div class="tiles">
     ${tile("Celkový čas", hms(r.total_ms, true))}
     ${tile("Vzdálenost GPS", km(r.distance_m, 2) + " km")}
@@ -600,9 +2135,18 @@ async function renderLive() {
       const fresh = r.age < FRESH_MS;
       const color = fresh ? colorOf(r.user_id) : "#777";
       const speed = r.speed_kmh != null ? Math.round(r.speed_kmh) + " km/h" : "";
-      L.circleMarker([r.lat, r.lon], { radius: 10, color: "#000", weight: 3, fillColor: color, fillOpacity: 1 })
-        .bindTooltip(`<b>${esc(r.name)}</b> ${esc(speed)}${fresh ? "" : " · " + ageText(r.age)}`, { permanent: true, direction: "right", offset: [12, 0] })
-        .addTo(layer);
+      const tip = `<b>${esc(r.name)}</b> ${esc(speed)}${r.car_name ? " · " + esc(r.car_name) : ""}${fresh ? "" : " · " + ageText(r.age)}`;
+      if (r.car_body) {
+        const size = 60, box = Math.ceil(size * 1.1) + 4;
+        const html = `<div class="halo" style="background:${color}"></div>` + carTop(r.car_body, r.car_color || "#c8102e", size, r.heading || 0, !fresh);
+        L.marker([r.lat, r.lon], { icon: L.divIcon({ className: "carmk", html, iconSize: [box, box], iconAnchor: [box / 2, box / 2] }) })
+          .bindTooltip(tip, { permanent: true, direction: "right", offset: [box / 2 + 4, 0] })
+          .addTo(layer);
+      } else {
+        L.circleMarker([r.lat, r.lon], { radius: 10, color: "#000", weight: 3, fillColor: color, fillOpacity: 1 })
+          .bindTooltip(tip, { permanent: true, direction: "right", offset: [12, 0] })
+          .addTo(layer);
+      }
       if (fresh) lastPts.push([r.lat, r.lon]);
     }
     if (!lastPts.length) lastPts = list.map((r) => [r.lat, r.lon]);
@@ -611,7 +2155,7 @@ async function renderLive() {
       <div class="leg" data-lat="${r.lat}" data-lon="${r.lon}">
         <span></span>
         <span class="sw" style="background:${r.age < FRESH_MS ? colorOf(r.user_id) : "#777"}"></span>
-        <span class="t">${esc(r.name)}<small>${r.speed_kmh != null ? Math.round(r.speed_kmh) + " km/h · " : ""}${r.rally_active && r.section ? "rally úsek " + r.section + " · " : ""}${ageText(r.age)}</small></span>
+        <span class="t">${esc(r.name)}${r.car_name ? " · " + esc(r.car_name) : ""}<small>${r.speed_kmh != null ? Math.round(r.speed_kmh) + " km/h · " : ""}${r.rally_active && r.section ? "rally úsek " + r.section + " · " : ""}${ageText(r.age)}</small></span>
       </div>`).join("") || `<div class="hint">Nikdo teď nesdílí polohu. Sdílení se zapíná v aplikaci na obrazovce TÝM.</div>`;
     app.querySelectorAll(".leg[data-lat]").forEach((el) => el.onclick = () => map.setView([+el.dataset.lat, +el.dataset.lon], 15));
     if (!fitted && lastPts.length) { fitted = true; fitAll(); }
