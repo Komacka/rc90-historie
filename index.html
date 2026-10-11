@@ -78,11 +78,14 @@ tr.sel { background: #1c1810; }
 .leg .t { font-size: 18px; line-height: 1.1; }
 .leg .t small { display: block; color: var(--label); font-size: 14px; }
 .leaflet-control-layers { background: var(--panel) !important; color: var(--digit) !important; border: 2px solid var(--bezel-l) !important; border-radius: 0 !important; font-size: 16px; }
-.leaflet-control-layers-base label { margin: 4px 0; }
+.leaflet-control-layers input { width: auto; margin-right: 6px; }
+.leaflet-control-layers-base label { margin: 4px 0; display: flex; align-items: center; }
 .leaflet-control-layers-expanded { padding: 6px 10px !important; }
 .leaflet-bar a { background: var(--btn) !important; color: var(--digit) !important; border-color: var(--bezel-l) !important; }
 .multi { display: grid; grid-template-columns: 1fr 320px; gap: 12px; }
 .multi > .box > .in { height: 100%; }
+.leaflet-tooltip { background: #111 !important; color: #f4f4ec !important; border: 1px solid #555 !important; border-radius: 0 !important; font-family: "Barlow Condensed", sans-serif; font-size: 16px; box-shadow: none !important; }
+.leaflet-tooltip-right::before, .leaflet-tooltip-left::before { display: none; }
 @media (max-width: 900px) { .multi { grid-template-columns: 1fr; } #mmap { height: 60vh; } }
 @media (max-width: 900px) {
   .tiles { grid-template-columns: repeat(2, 1fr); }
@@ -110,6 +113,7 @@ const SUPABASE_URL = "https://lseenngapbmygzrskvkq.supabase.co";
 const SUPABASE_KEY = "sb_publishable_fDqZmkzS7AZ_tlI__ICsKw_44peo4px";
 // ---------------------------------------------------------------------------
 const EMAIL_DOMAIN = "rc90tym.cz";   // musí odpovídat aplikaci
+const COLORS = ["#ffb020", "#3ec5ff", "#ff4fd8", "#7dff4f", "#ff5a3c", "#b18cff", "#ffffff", "#ffe14f", "#3cffc0", "#ff9a9a"];
 const $ = (s) => document.querySelector(s);
 const app = $("#app");
 
@@ -127,6 +131,7 @@ let session = store.get("session");
 let profiles = {};
 let ralliesCache = null;
 let map = null;
+let liveTimer = null;
 const selected = new Set(store.get("selected") || []);
 const saveSel = () => store.set("selected", [...selected]);
 
@@ -216,9 +221,11 @@ function render() {
   $("#who").textContent = session ? "PŘIHLÁŠEN: " + session.username.toUpperCase() : "";
   $("#btnLogout").hidden = !session;
   if (map) { map.remove(); map = null; }
+  if (liveTimer) { clearInterval(liveTimer); liveTimer = null; }
   if (!configured()) return renderProject();
   if (!session) return renderLogin();
   const h = location.hash.replace(/^#/, "");
+  if (h === "live") return renderLive();
   if (h.startsWith("m/")) return renderMulti(h.slice(2).split(",").map(decodeURIComponent).filter(Boolean));
   if (h.startsWith("j/")) return renderDetail(decodeURIComponent(h.slice(2)));
   if (h) return renderDetail(decodeURIComponent(h));
@@ -278,7 +285,13 @@ async function loadRallies(force) {
   return ralliesCache;
 }
 const nameOf = (uid) => (profiles[uid] && profiles[uid].username || "?").toUpperCase();
-const colorOf = (uid) => profiles[uid] && profiles[uid].color || "#ffb020";
+// barva člena podle jména – stejný výpočet jako v aplikaci
+function colorByName(name) {
+  let h = 0;
+  for (const ch of String(name || "")) h = (h * 31 + ch.charCodeAt(0)) & 0x7fffffff;
+  return COLORS[h % COLORS.length];
+}
+const colorOf = (uid) => colorByName(profiles[uid] && profiles[uid].username);
 
 async function renderList() {
   app.innerHTML = `<div class="hint">Načítám…</div>`;
@@ -297,6 +310,7 @@ async function renderList() {
       ${people.map((p) => `<option value="${esc(p.id)}">${esc(p.username.toUpperCase())}</option>`).join("")}
     </select>
     <button id="reload">Obnovit</button>
+    <button id="live" class="go">Živá mapa týmu</button>
     <button id="multi" class="warn" ${selected.size ? "" : "disabled"}>Vybrané na mapě (${selected.size})</button>
     ${selected.size ? `<button id="clearSel">Zrušit výběr</button>` : ""}
     <span class="grow" style="flex:1"></span>
@@ -323,6 +337,7 @@ async function renderList() {
   $("#flt").value = filter;
   $("#flt").onchange = (e) => { store.set("filter", e.target.value); renderList(); };
   $("#reload").onclick = async () => { ralliesCache = null; renderList(); };
+  $("#live").onclick = () => { location.hash = "live"; };
   app.querySelectorAll("tbody tr").forEach((tr) => tr.onclick = (e) => {
     if (e.target.closest("td.ck")) return;
     location.hash = "j/" + encodeURIComponent(tr.dataset.id);
@@ -467,7 +482,6 @@ function drawMap(pts) {
 // ---------------------------------------------------------------------------
 // Víc jízd v jedné mapě
 // ---------------------------------------------------------------------------
-const COLORS = ["#ffb020", "#3ec5ff", "#ff4fd8", "#7dff4f", "#ff5a3c", "#b18cff", "#ffffff", "#ffe14f", "#3cffc0", "#ff9a9a"];
 
 async function renderMulti(ids) {
   ids = ids.slice(0, 40);
@@ -528,6 +542,82 @@ async function renderMulti(ids) {
   const fitAll = () => { if (bounds.isValid()) map.fitBounds(bounds, { padding: [30, 30] }); else map.setView([49.8, 15.5], 7); };
   $("#fitAll").onclick = fitAll;
   fitAll();
+}
+
+// ---------------------------------------------------------------------------
+// Živá mapa týmu (obnovuje se každých 5 s)
+// ---------------------------------------------------------------------------
+const FRESH_MS = 60000, MAX_AGE_MS = 30 * 60000;
+function ageText(ms) {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  if (s < 8) return "teď";
+  if (s < 60) return s + " s";
+  if (s < 3600) return Math.floor(s / 60) + " min";
+  return Math.floor(s / 3600) + " h";
+}
+async function renderLive() {
+  app.innerHTML = `
+  <div class="toolbar">
+    <button id="back">← Zpět na seznam</button>
+    <span class="lbl" style="margin-left:8px">Živá mapa týmu</span>
+    <span class="muted" id="liveInfo"></span>
+    <span style="flex:1"></span>
+    <button id="fitAll">Ukázat všechny</button>
+  </div>
+  <div class="multi">
+    <div class="box"><div class="in" style="padding:0"><div id="mmap"></div></div></div>
+    <div class="box"><div class="in legend" id="legend"><div class="hint">Načítám…</div></div></div>
+  </div>`;
+  $("#back").onclick = () => { location.hash = ""; };
+  map = createMap("mmap");
+  map.setView([49.8, 15.5], 7);
+  const layer = L.layerGroup().addTo(map);
+  let fitted = false, lastPts = [];
+  const fitAll = () => {
+    const fresh = lastPts.length ? lastPts : [];
+    if (fresh.length === 1) map.setView(fresh[0], 14);
+    else if (fresh.length > 1) map.fitBounds(L.latLngBounds(fresh), { padding: [40, 40], maxZoom: 15 });
+  };
+  $("#fitAll").onclick = fitAll;
+  async function tick() {
+    let rows;
+    try {
+      if (!Object.keys(profiles).length) await loadProfiles();
+      const since = new Date(Date.now() - MAX_AGE_MS).toISOString();
+      rows = await api("/rest/v1/live_positions?select=*&updated_at=gt." + encodeURIComponent(since));
+    } catch (e) {
+      const info = $("#liveInfo");
+      if (info) info.textContent = e.status === 404 ? " · chybí tabulka (spusť rc90_live.sql)" : " · bez spojení";
+      return;
+    }
+    if (!map) return;
+    const now = Date.now();
+    layer.clearLayers();
+    lastPts = [];
+    const list = (rows || []).map((r) => ({ ...r, age: now - new Date(r.updated_at).getTime(), name: nameOf(r.user_id) }))
+      .sort((a, b) => a.age - b.age);
+    for (const r of list) {
+      const fresh = r.age < FRESH_MS;
+      const color = fresh ? colorOf(r.user_id) : "#777";
+      const speed = r.speed_kmh != null ? Math.round(r.speed_kmh) + " km/h" : "";
+      L.circleMarker([r.lat, r.lon], { radius: 10, color: "#000", weight: 3, fillColor: color, fillOpacity: 1 })
+        .bindTooltip(`<b>${esc(r.name)}</b> ${esc(speed)}${fresh ? "" : " · " + ageText(r.age)}`, { permanent: true, direction: "right", offset: [12, 0] })
+        .addTo(layer);
+      if (fresh) lastPts.push([r.lat, r.lon]);
+    }
+    if (!lastPts.length) lastPts = list.map((r) => [r.lat, r.lon]);
+    $("#liveInfo").textContent = " · " + list.filter((r) => r.age < FRESH_MS).length + " online · obnoveno " + new Date().toLocaleTimeString("cs-CZ");
+    $("#legend").innerHTML = list.map((r) => `
+      <div class="leg" data-lat="${r.lat}" data-lon="${r.lon}">
+        <span></span>
+        <span class="sw" style="background:${r.age < FRESH_MS ? colorOf(r.user_id) : "#777"}"></span>
+        <span class="t">${esc(r.name)}<small>${r.speed_kmh != null ? Math.round(r.speed_kmh) + " km/h · " : ""}${r.rally_active && r.section ? "rally úsek " + r.section + " · " : ""}${ageText(r.age)}</small></span>
+      </div>`).join("") || `<div class="hint">Nikdo teď nesdílí polohu. Sdílení se zapíná v aplikaci na obrazovce TÝM.</div>`;
+    app.querySelectorAll(".leg[data-lat]").forEach((el) => el.onclick = () => map.setView([+el.dataset.lat, +el.dataset.lon], 15));
+    if (!fitted && lastPts.length) { fitted = true; fitAll(); }
+  }
+  await tick();
+  liveTimer = setInterval(tick, 5000);
 }
 
 const fileBase = (r) => (r.name || "rally").normalize("NFD").replace(/\p{M}+/gu, "").replace(/[^A-Za-z0-9_-]+/g, "_").slice(0, 40);
