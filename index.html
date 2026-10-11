@@ -1,0 +1,565 @@
+<!doctype html>
+<html lang="cs">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>RC-90 Historie</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<style>
+/*
+  RC-90 – prohlížení týmových jízd na počítači.
+  Stačí otevřít tento soubor v prohlížeči (dvojklik). Nic se neinstaluje.
+  Údaje projektu lze vyplnit sem (SUPABASE_URL / SUPABASE_KEY níže) nebo jednou ve formuláři.
+*/
+:root {
+  --bg: #080808; --panel: #111311; --bezel: #2a2a2a; --bezel-l: #444;
+  --label: #a8a89c; --digit: #f4f4ec; --amber: #ffb020; --green: #39d46e; --red: #ff3b30;
+  --btn: #1d1d1d; --btn-b: #5a5a5a;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--digit); font-family: "Barlow Condensed", "Arial Narrow", sans-serif; }
+body { min-height: 100vh; }
+.mono { font-family: "IBM Plex Mono", ui-monospace, monospace; }
+header { display: flex; align-items: center; gap: 16px; padding: 14px 24px; border-bottom: 3px solid var(--bezel); }
+.plate { background: var(--panel); border: 3px solid var(--bezel); padding: 6px 12px; line-height: 1; }
+.plate b { font-size: 30px; letter-spacing: 1px; } .plate small { display: block; color: var(--label); font-size: 12px; letter-spacing: 2px; margin-top: 4px; }
+header .grow { flex: 1; }
+.who { color: var(--label); font-size: 16px; letter-spacing: 1px; }
+button, select, input {
+  font-family: inherit; font-size: 18px; letter-spacing: 1px; color: var(--digit);
+  background: var(--btn); border: 2px solid var(--btn-b); padding: 8px 14px; border-radius: 0;
+}
+button { cursor: pointer; font-weight: 700; text-transform: uppercase; }
+button:hover { border-color: var(--digit); }
+button.go { border-color: var(--green); }
+button.warn { border-color: var(--amber); }
+input { width: 100%; background: var(--panel); }
+input:focus, select:focus, button:focus-visible { outline: 2px solid var(--amber); outline-offset: 1px; }
+main { padding: 20px 24px 40px; max-width: 1500px; margin: 0 auto; }
+.box { background: var(--bezel); padding: 3px; }
+.box > .in { background: var(--panel); border: 1px solid var(--bezel-l); padding: 12px 16px; }
+.lbl { color: var(--label); font-size: 14px; letter-spacing: 2px; text-transform: uppercase; font-weight: 700; }
+.err { color: var(--red); font-size: 17px; min-height: 22px; letter-spacing: .5px; }
+.hint { color: var(--label); font-size: 15px; }
+.form { max-width: 520px; margin: 60px auto; display: grid; gap: 14px; }
+.form .row { display: grid; gap: 6px; }
+.toolbar { display: flex; gap: 12px; align-items: center; margin-bottom: 14px; flex-wrap: wrap; }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid #222; white-space: nowrap; }
+th { color: var(--label); font-size: 14px; letter-spacing: 2px; font-weight: 700; text-transform: uppercase; }
+td { font-size: 19px; }
+td.num, th.num { text-align: right; }
+tbody tr { cursor: pointer; }
+tbody tr:hover { background: #1a1a1a; }
+.dot { display: inline-block; width: 10px; height: 10px; margin-right: 8px; vertical-align: middle; }
+.tiles { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin-bottom: 12px; }
+.tile .v { font-family: "IBM Plex Mono", monospace; font-size: 30px; font-weight: 600; margin-top: 4px; }
+.split { display: grid; grid-template-columns: 1.4fr 1fr; gap: 12px; }
+#map { height: 560px; background: #000; }
+.scroll { max-height: 560px; overflow: auto; }
+.events td { font-size: 16px; }
+.muted { color: var(--label); }
+.split > .box > .in { height: 100%; }
+.events td:first-child { width: 1%; }
+.title { font-size: 34px; font-weight: 700; letter-spacing: .5px; margin: 0 0 2px; }
+.leaflet-container { font-family: inherit; }
+td.ck, th.ck { width: 36px; padding-right: 0; }
+input[type=checkbox] { width: 20px; height: 20px; accent-color: var(--amber); cursor: pointer; }
+tr.sel { background: #1c1810; }
+#mmap { height: calc(100vh - 230px); min-height: 420px; background: #000; }
+.legend { display: grid; gap: 6px; align-content: start; }
+.leg { display: grid; grid-template-columns: 22px 14px 1fr; gap: 8px; align-items: center; padding: 6px 4px; border-bottom: 1px solid #222; cursor: pointer; }
+.leg:hover { background: #1a1a1a; }
+.leg .sw { width: 14px; height: 14px; }
+.leg .t { font-size: 18px; line-height: 1.1; }
+.leg .t small { display: block; color: var(--label); font-size: 14px; }
+.leaflet-control-layers { background: var(--panel) !important; color: var(--digit) !important; border: 2px solid var(--bezel-l) !important; border-radius: 0 !important; font-size: 16px; }
+.leaflet-control-layers-base label { margin: 4px 0; }
+.leaflet-control-layers-expanded { padding: 6px 10px !important; }
+.leaflet-bar a { background: var(--btn) !important; color: var(--digit) !important; border-color: var(--bezel-l) !important; }
+.multi { display: grid; grid-template-columns: 1fr 320px; gap: 12px; }
+.multi > .box > .in { height: 100%; }
+@media (max-width: 900px) { .multi { grid-template-columns: 1fr; } #mmap { height: 60vh; } }
+@media (max-width: 900px) {
+  .tiles { grid-template-columns: repeat(2, 1fr); }
+  .split { grid-template-columns: 1fr; }
+  main, header { padding-left: 16px; padding-right: 16px; }
+  td, th { padding: 7px 6px; }
+  .hide-s { display: none; }
+}
+</style>
+</head>
+<body>
+<header>
+  <div class="plate"><b>RC-90</b><small>HISTORIE TÝMU</small></div>
+  <div class="grow"></div>
+  <span class="who" id="who"></span>
+  <button id="btnProject" class="hide-s">Projekt</button>
+  <button id="btnLogout" hidden>Odhlásit</button>
+</header>
+<main id="app"></main>
+
+<script>
+// ---------------------------------------------------------------------------
+// Volitelně: vyplň údaje projektu přímo sem (pak se na ně stránka nebude ptát)
+const SUPABASE_URL = "https://lseenngapbmygzrskvkq.supabase.co";
+const SUPABASE_KEY = "sb_publishable_fDqZmkzS7AZ_tlI__ICsKw_44peo4px";
+// ---------------------------------------------------------------------------
+const EMAIL_DOMAIN = "rc90tym.cz";   // musí odpovídat aplikaci
+const $ = (s) => document.querySelector(s);
+const app = $("#app");
+
+// Uložení v prohlížeči; když ho prohlížeč pro soubor z disku nepovolí, drží se údaje aspoň v paměti.
+const mem = {};
+const store = {
+  get(k) {
+    try { const v = localStorage.getItem("rc90_" + k); if (v !== null) return JSON.parse(v); } catch (e) {}
+    return k in mem ? mem[k] : null;
+  },
+  set(k, v) { mem[k] = v; try { localStorage.setItem("rc90_" + k, JSON.stringify(v)); } catch (e) {} },
+  del(k) { delete mem[k]; try { localStorage.removeItem("rc90_" + k); } catch (e) {} },
+};
+let session = store.get("session");
+let profiles = {};
+let ralliesCache = null;
+let map = null;
+const selected = new Set(store.get("selected") || []);
+const saveSel = () => store.set("selected", [...selected]);
+
+const cfg = () => {
+  const p = store.get("project") || {};
+  return { url: (SUPABASE_URL || p.url || "").replace(/\/+$/, ""), key: SUPABASE_KEY || p.key || "" };
+};
+const configured = () => { const c = cfg(); return c.url.startsWith("https://") && c.key.length > 20; };
+
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+function normalizeName(raw) {
+  const a = raw.trim().toLowerCase().normalize("NFD").replace(/\p{M}+/gu, "").replace(/\s+/g, ".");
+  const ok = /^[a-z0-9][a-z0-9._-]{1,23}$/.test(a);
+  return ok ? a : null;
+}
+const pad = (n, w = 2) => String(n).padStart(w, "0");
+function hms(ms, cs = false) {
+  ms = Math.max(0, ms | 0);
+  const h = Math.floor(ms / 3600000), m = Math.floor(ms / 60000) % 60, s = Math.floor(ms / 1000) % 60;
+  return pad(h) + ":" + pad(m) + ":" + pad(s) + (cs ? "." + pad(Math.floor(ms / 10) % 100) : "");
+}
+const dt = (iso) => { const d = new Date(iso); return d.toLocaleDateString("cs-CZ") + " " + d.toLocaleTimeString("cs-CZ", { hour: "2-digit", minute: "2-digit" }); };
+const km = (m, d = 1) => (m / 1000).toFixed(d);
+const avg = (m, ms) => ms > 1000 ? (m / 1000 / (ms / 3600000)) : 0;
+
+// ---------------------------------------------------------------------------
+// Supabase API (bez knihoven)
+// ---------------------------------------------------------------------------
+async function api(path, { method = "GET", body, auth = true, headers = {} } = {}) {
+  const c = cfg();
+  const h = { apikey: c.key, "Content-Type": "application/json", ...headers };
+  if (auth) {
+    await ensureFresh();
+    if (!session) throw new Error("PŘIHLAS SE ZNOVU");
+    h.Authorization = "Bearer " + session.access_token;
+  }
+  let r = await fetch(c.url + path, { method, headers: h, body: body ? JSON.stringify(body) : undefined });
+  if (r.status === 401 && auth) {
+    await refresh(true);
+    if (!session) throw new Error("PŘIHLAS SE ZNOVU");
+    h.Authorization = "Bearer " + session.access_token;
+    r = await fetch(c.url + path, { method, headers: h, body: body ? JSON.stringify(body) : undefined });
+  }
+  const text = await r.text();
+  let data = null; try { data = text ? JSON.parse(text) : null; } catch (e) {}
+  if (!r.ok) { const e = new Error(authMessage(r.status, data)); e.status = r.status; throw e; }
+  return data;
+}
+function authMessage(status, d) {
+  const code = d && (d.error_code || d.code) || "";
+  const msg = ((d && (d.msg || d.message || d.error_description)) || "").toLowerCase();
+  if (code === "invalid_credentials" || msg.includes("invalid login")) return "ŠPATNÉ JMÉNO NEBO HESLO";
+  if (status === 401 || status === 403) return "ŠPATNÝ KLÍČ PROJEKTU NEBO CHYBÍ OPRÁVNĚNÍ";
+  if (status === 404) return "ŠPATNÁ ADRESA PROJEKTU NEBO CHYBÍ TABULKA (SPUSŤ SQL SKRIPT)";
+  return "CHYBA SERVERU (" + status + ")";
+}
+async function ensureFresh() {
+  if (!session) return;
+  if ((session.expires_at || 0) * 1000 - Date.now() < 60000) await refresh(false);
+}
+async function refresh(force) {
+  if (!session || !session.refresh_token) { session = null; return; }
+  try {
+    const c = cfg();
+    const r = await fetch(c.url + "/auth/v1/token?grant_type=refresh_token", {
+      method: "POST", headers: { apikey: c.key, "Content-Type": "application/json" },
+      body: JSON.stringify({ refresh_token: session.refresh_token }),
+    });
+    if (r.ok) { saveSession(await r.json(), session.username); }
+    else if (r.status >= 400 && r.status < 500) { logout(); }
+  } catch (e) { if (force) throw e; }
+}
+function saveSession(d, username) {
+  session = {
+    access_token: d.access_token, refresh_token: d.refresh_token,
+    expires_at: d.expires_at || Math.floor(Date.now() / 1000) + (d.expires_in || 3600),
+    user_id: d.user && d.user.id || (session && session.user_id), username,
+  };
+  store.set("session", session);
+}
+function logout() { session = null; store.del("session"); ralliesCache = null; render(); }
+
+// ---------------------------------------------------------------------------
+// Obrazovky
+// ---------------------------------------------------------------------------
+function render() {
+  $("#who").textContent = session ? "PŘIHLÁŠEN: " + session.username.toUpperCase() : "";
+  $("#btnLogout").hidden = !session;
+  if (map) { map.remove(); map = null; }
+  if (!configured()) return renderProject();
+  if (!session) return renderLogin();
+  const h = location.hash.replace(/^#/, "");
+  if (h.startsWith("m/")) return renderMulti(h.slice(2).split(",").map(decodeURIComponent).filter(Boolean));
+  if (h.startsWith("j/")) return renderDetail(decodeURIComponent(h.slice(2)));
+  if (h) return renderDetail(decodeURIComponent(h));
+  renderList();
+}
+
+function renderProject() {
+  const c = cfg();
+  app.innerHTML = `
+  <div class="form box"><div class="in" style="display:grid;gap:14px">
+    <div class="title">Projekt</div>
+    <div class="hint">Údaje najdeš v Supabase → Project Settings → API Keys. Zadávají se jen jednou, uloží se v tomto prohlížeči.</div>
+    <div class="row"><span class="lbl">Adresa projektu</span><input id="pUrl" placeholder="https://xxxx.supabase.co" value="${esc(c.url)}"></div>
+    <div class="row"><span class="lbl">Klíč projektu (publishable / anon)</span><input id="pKey" value="${esc(c.key)}"></div>
+    <div class="err" id="pErr"></div>
+    <button class="go" id="pSave">Uložit</button>
+  </div></div>`;
+  $("#pSave").onclick = () => {
+    const url = $("#pUrl").value.trim(), key = $("#pKey").value.trim();
+    if (!url.startsWith("https://") || key.length < 20) { $("#pErr").textContent = "ADRESA MUSÍ ZAČÍNAT https:// A KLÍČ JE DLOUHÝ TEXT"; return; }
+    store.set("project", { url, key }); render();
+  };
+}
+
+function renderLogin() {
+  app.innerHTML = `
+  <form class="form box" id="lf"><div class="in" style="display:grid;gap:14px">
+    <div class="title">Přihlášení</div>
+    <div class="hint">Stejné jméno a heslo jako v aplikaci RC-90.</div>
+    <div class="row"><span class="lbl">Jméno</span><input id="lName" autocomplete="username" autofocus></div>
+    <div class="row"><span class="lbl">Heslo</span><input id="lPass" type="password" autocomplete="current-password"></div>
+    <div class="err" id="lErr"></div>
+    <button class="go" type="submit">Přihlásit</button>
+  </div></form>`;
+  $("#lf").onsubmit = async (e) => {
+    e.preventDefault();
+    const name = normalizeName($("#lName").value);
+    if (!name) { $("#lErr").textContent = "NEPLATNÉ JMÉNO"; return; }
+    $("#lErr").textContent = "";
+    try {
+      const d = await api("/auth/v1/token?grant_type=password", {
+        method: "POST", auth: false, body: { email: name + "@" + EMAIL_DOMAIN, password: $("#lPass").value },
+      });
+      saveSession(d, name); render();
+    } catch (err) { $("#lErr").textContent = err.message === "Failed to fetch" ? "BEZ INTERNETU / ŠPATNÁ ADRESA" : err.message; }
+  };
+}
+
+async function loadProfiles() {
+  const rows = await api("/rest/v1/profiles?select=id,username,color");
+  profiles = {}; (rows || []).forEach((p) => profiles[p.id] = p);
+}
+async function loadRallies(force) {
+  if (ralliesCache && !force) return ralliesCache;
+  await loadProfiles();
+  ralliesCache = await api("/rest/v1/rallies?select=id,user_id,device,name,start_at,end_at,total_ms,distance_m,max_kmh,point_count&order=start_at.desc&limit=1000");
+  return ralliesCache;
+}
+const nameOf = (uid) => (profiles[uid] && profiles[uid].username || "?").toUpperCase();
+const colorOf = (uid) => profiles[uid] && profiles[uid].color || "#ffb020";
+
+async function renderList() {
+  app.innerHTML = `<div class="hint">Načítám…</div>`;
+  let rows;
+  try { rows = await loadRallies(false); } catch (e) { return showError(e); }
+  const filter = store.get("filter") || "all";
+  const people = Object.values(profiles).sort((a, b) => a.username.localeCompare(b.username));
+  const shown = rows.filter((r) => filter === "all" || (filter === "me" ? r.user_id === session.user_id : r.user_id === filter));
+  const totKm = shown.reduce((a, r) => a + r.distance_m, 0), totMs = shown.reduce((a, r) => a + r.total_ms, 0);
+  app.innerHTML = `
+  <div class="toolbar">
+    <span class="lbl">Zobrazit</span>
+    <select id="flt">
+      <option value="all">Celý tým</option>
+      <option value="me">Jen moje</option>
+      ${people.map((p) => `<option value="${esc(p.id)}">${esc(p.username.toUpperCase())}</option>`).join("")}
+    </select>
+    <button id="reload">Obnovit</button>
+    <button id="multi" class="warn" ${selected.size ? "" : "disabled"}>Vybrané na mapě (${selected.size})</button>
+    ${selected.size ? `<button id="clearSel">Zrušit výběr</button>` : ""}
+    <span class="grow" style="flex:1"></span>
+    <span class="muted mono">${shown.length} jízd · ${km(totKm)} km · ${hms(totMs)}</span>
+  </div>
+  <div class="box"><div class="in" style="padding:4px 8px">
+  ${shown.length === 0 ? `<div class="hint" style="padding:16px">Zatím žádné jízdy. Odesílají se z aplikace po každé rally, když je internet.</div>` : `
+  <table>
+    <thead><tr><th class="ck"><input type="checkbox" id="ckAll" title="Vybrat vše"></th><th>Datum</th><th>Jezdec</th><th>Název</th><th class="num">Čas</th><th class="num">Km</th><th class="num hide-s">Ø km/h</th><th class="num hide-s">Max</th><th class="hide-s">Zařízení</th></tr></thead>
+    <tbody>${shown.map((r) => `
+      <tr data-id="${esc(r.id)}" class="${selected.has(r.id) ? "sel" : ""}">
+        <td class="ck"><input type="checkbox" data-ck="${esc(r.id)}" ${selected.has(r.id) ? "checked" : ""}></td>
+        <td class="mono">${esc(dt(r.start_at))}</td>
+        <td><span class="dot" style="background:${esc(colorOf(r.user_id))}"></span>${esc(nameOf(r.user_id))}</td>
+        <td>${esc(r.name)}</td>
+        <td class="num mono">${hms(r.total_ms)}</td>
+        <td class="num mono">${km(r.distance_m)}</td>
+        <td class="num mono hide-s">${avg(r.distance_m, r.total_ms).toFixed(1)}</td>
+        <td class="num mono hide-s">${(+r.max_kmh).toFixed(1)}</td>
+        <td class="muted hide-s">${esc(r.device || "")}</td>
+      </tr>`).join("")}</tbody>
+  </table>`}
+  </div></div>`;
+  $("#flt").value = filter;
+  $("#flt").onchange = (e) => { store.set("filter", e.target.value); renderList(); };
+  $("#reload").onclick = async () => { ralliesCache = null; renderList(); };
+  app.querySelectorAll("tbody tr").forEach((tr) => tr.onclick = (e) => {
+    if (e.target.closest("td.ck")) return;
+    location.hash = "j/" + encodeURIComponent(tr.dataset.id);
+  });
+  app.querySelectorAll("input[data-ck]").forEach((cb) => cb.onchange = () => {
+    if (cb.checked) selected.add(cb.dataset.ck); else selected.delete(cb.dataset.ck);
+    saveSel(); renderList();
+  });
+  const all = $("#ckAll");
+  if (all) {
+    all.checked = shown.length > 0 && shown.every((r) => selected.has(r.id));
+    all.onchange = () => { shown.forEach((r) => all.checked ? selected.add(r.id) : selected.delete(r.id)); saveSel(); renderList(); };
+  }
+  $("#multi").onclick = () => { location.hash = "m/" + [...selected].map(encodeURIComponent).join(","); };
+  if ($("#clearSel")) $("#clearSel").onclick = () => { selected.clear(); saveSel(); renderList(); };
+}
+
+function decodeTrack(s, startMs) {
+  if (!s) return [];
+  return s.split(";").map((it) => {
+    const c = it.split(",");
+    if (c.length < 5) return null;
+    return { lat: +c[0], lon: +c[1], kmh: +c[2], ms: +c[3], sec: +c[4], t: startMs + +c[3] };
+  }).filter(Boolean);
+}
+
+async function renderDetail(id) {
+  app.innerHTML = `<div class="hint">Načítám…</div>`;
+  let r;
+  try {
+    if (!Object.keys(profiles).length) await loadProfiles();
+    const rows = await api("/rest/v1/rallies?select=*&id=eq." + encodeURIComponent(id));
+    r = rows && rows[0];
+  } catch (e) { return showError(e); }
+  if (!r) { app.innerHTML = `<button class="back" onclick="location.hash=''">← Zpět</button><div class="hint">Jízda nenalezena.</div>`; return; }
+  const start = new Date(r.start_at).getTime();
+  const pts = decodeTrack(r.track, start);
+  const sections = r.sections || [], events = r.events || [];
+  app.innerHTML = `
+  <div class="toolbar">
+    <button id="back">← Zpět</button>
+    <span style="flex:1"></span>
+    <button id="pick" class="${selected.has(r.id) ? "warn" : ""}">${selected.has(r.id) ? "Ve výběru pro mapu ✓" : "Přidat do výběru pro mapu"}</button>
+    <button id="gpx" ${pts.length ? "" : "disabled"}>GPX</button>
+    <button id="csv" ${pts.length ? "" : "disabled"}>CSV</button>
+  </div>
+  <div class="title">${esc(r.name)}</div>
+  <div class="hint" style="margin-bottom:12px"><span class="dot" style="background:${esc(colorOf(r.user_id))}"></span>${esc(nameOf(r.user_id))} · ${esc(dt(r.start_at))}${r.end_at ? " – " + esc(new Date(r.end_at).toLocaleTimeString("cs-CZ", { hour: "2-digit", minute: "2-digit" })) : ""} · ${esc(r.device || "")}</div>
+  <div class="tiles">
+    ${tile("Celkový čas", hms(r.total_ms, true))}
+    ${tile("Vzdálenost GPS", km(r.distance_m, 2) + " km")}
+    ${tile("Průměr", avg(r.distance_m, r.total_ms).toFixed(1) + " km/h")}
+    ${tile("Maximum", (+r.max_kmh).toFixed(1) + " km/h")}
+    ${tile("Úseky", String(sections.length))}
+  </div>
+  <div class="split">
+    <div class="box"><div class="in" style="padding:0"><div id="map"></div></div></div>
+    <div class="box"><div class="in scroll">
+      <div class="lbl" style="margin-bottom:6px">Úseky</div>
+      <table><thead><tr><th>Úsek</th><th class="num">Čas úseku</th><th class="num">Celkem</th><th class="num">Km</th><th class="num">Ø</th></tr></thead>
+      <tbody>${sections.map((s) => `<tr style="cursor:default"><td class="mono">S${pad(s.i)}</td><td class="num mono">${hms(s.dur, true)}</td><td class="num mono">${hms(s.tot, true)}</td><td class="num mono">${km(s.dist || 0, 2)}</td><td class="num mono">${avg(s.dist || 0, s.dur).toFixed(1)}</td></tr>`).join("") || `<tr><td colspan="5" class="muted">Bez úseků</td></tr>`}</tbody></table>
+      <div class="lbl" style="margin:16px 0 6px">Události</div>
+      <table class="events"><tbody>${events.map((e) => `<tr style="cursor:default"><td class="mono muted">${hms(e.t, true)}</td><td>${esc(e.type)}</td><td class="muted">${esc(e.d)}</td></tr>`).join("") || `<tr><td class="muted">Žádné</td></tr>`}</tbody></table>
+    </div></div>
+  </div>`;
+  $("#back").onclick = () => { location.hash = ""; };
+  $("#pick").onclick = (e) => {
+    if (selected.has(r.id)) selected.delete(r.id); else selected.add(r.id);
+    saveSel();
+    e.target.textContent = selected.has(r.id) ? "Ve výběru pro mapu ✓" : "Přidat do výběru pro mapu";
+    e.target.className = selected.has(r.id) ? "warn" : "";
+  };
+  $("#gpx").onclick = () => download(fileBase(r) + ".gpx", toGpx(r, pts), "application/gpx+xml");
+  $("#csv").onclick = () => download(fileBase(r) + ".csv", toCsv(pts), "text/csv");
+  drawMap(pts);
+}
+const tile = (l, v) => `<div class="box tile"><div class="in"><div class="lbl">${esc(l)}</div><div class="v">${esc(v)}</div></div></div>`;
+
+// ---------------------------------------------------------------------------
+// Mapové podklady: přepínač vpravo nahoře, volba se pamatuje.
+// Když vybraný podklad nejde načíst (některé servery odmítají stránky otevřené ze souboru),
+// přepne se automaticky na jiný.
+// ---------------------------------------------------------------------------
+function baseLayers() {
+  const osm = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>';
+  const esri = (svc, maxNative) => L.tileLayer(
+    "https://server.arcgisonline.com/ArcGIS/rest/services/" + svc + "/MapServer/tile/{z}/{y}/{x}",
+    { maxZoom: 19, maxNativeZoom: maxNative, attribution: "Podklad &copy; Esri" });
+  const layers = {
+    "Ulice": esri("World_Street_Map", 19),
+    "Satelit": esri("World_Imagery", 19),
+    "Tmavá": esri("Canvas/World_Dark_Gray_Base", 16),
+  };
+  // OpenStreetMap blokuje stránky otevřené ze souboru („Access blocked“) – nabízí se jen na webové adrese
+  if (location.protocol !== "file:") {
+    return { "Mapa": L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, attribution: osm }), ...layers };
+  }
+  return layers;
+}
+function createMap(elId) {
+  const m = L.map(elId, { zoomControl: true, attributionControl: true });
+  const layers = baseLayers();
+  const order = Object.keys(layers);
+  let current = store.get("base");
+  if (!layers[current]) current = order[0];
+  layers[current].addTo(m);
+  L.control.layers(layers, null, { position: "topright", collapsed: false }).addTo(m);
+  m.on("baselayerchange", (e) => store.set("base", e.name));
+  // když podklad vůbec nejde načíst, přepne se na další
+  const loaded = {}, errors = {};
+  order.forEach((name) => {
+    const l = layers[name];
+    l.on("tileload", () => { loaded[name] = (loaded[name] || 0) + 1; });
+    l.on("tileerror", () => {
+      errors[name] = (errors[name] || 0) + 1;
+      if (errors[name] >= 4 && !loaded[name] && m.hasLayer(l)) {
+        const next = order[(order.indexOf(name) + 1) % order.length];
+        m.removeLayer(l); layers[next].addTo(m);
+      }
+    });
+  });
+  return m;
+}
+
+function drawMap(pts) {
+  map = createMap("map");
+  if (pts.length < 2) { map.setView([49.8, 15.5], 7); return; }
+  const ll = pts.map((p) => [p.lat, p.lon]);
+  L.polyline(ll, { color: "#000", weight: 7, opacity: .7 }).addTo(map);
+  const line = L.polyline(ll, { color: "#ffb020", weight: 4 }).addTo(map);
+  for (let i = 1; i < pts.length; i++) {
+    if (pts[i].sec !== pts[i - 1].sec) {
+      L.circleMarker([pts[i].lat, pts[i].lon], { radius: 6, color: "#000", weight: 2, fillColor: "#f4f4ec", fillOpacity: 1 })
+        .bindTooltip("Úsek " + pts[i].sec + " · " + hms(pts[i].ms)).addTo(map);
+    }
+  }
+  L.circleMarker(ll[0], { radius: 8, color: "#000", weight: 2, fillColor: "#39d46e", fillOpacity: 1 }).bindTooltip("Start").addTo(map);
+  L.circleMarker(ll[ll.length - 1], { radius: 8, color: "#000", weight: 2, fillColor: "#ff3b30", fillOpacity: 1 }).bindTooltip("Cíl").addTo(map);
+  map.fitBounds(line.getBounds(), { padding: [24, 24] });
+}
+
+// ---------------------------------------------------------------------------
+// Víc jízd v jedné mapě
+// ---------------------------------------------------------------------------
+const COLORS = ["#ffb020", "#3ec5ff", "#ff4fd8", "#7dff4f", "#ff5a3c", "#b18cff", "#ffffff", "#ffe14f", "#3cffc0", "#ff9a9a"];
+
+async function renderMulti(ids) {
+  ids = ids.slice(0, 40);
+  app.innerHTML = `<div class="hint">Načítám ${ids.length} jízd…</div>`;
+  let rows;
+  try {
+    if (!Object.keys(profiles).length) await loadProfiles();
+    const list = ids.map((i) => '"' + i.replace(/"/g, "") + '"').join(",");
+    rows = await api("/rest/v1/rallies?select=id,user_id,name,start_at,total_ms,distance_m,track&order=start_at.asc&id=in.(" + encodeURIComponent(list) + ")");
+  } catch (e) { return showError(e); }
+  rows = rows || [];
+  app.innerHTML = `
+  <div class="toolbar">
+    <button id="back">← Zpět na seznam</button>
+    <span class="lbl" style="margin-left:8px">${rows.length} ${rows.length === 1 ? "jízda" : rows.length < 5 ? "jízdy" : "jízd"} v mapě</span>
+    <span style="flex:1"></span>
+    <button id="fitAll">Ukázat vše</button>
+  </div>
+  <div class="multi">
+    <div class="box"><div class="in" style="padding:0"><div id="mmap"></div></div></div>
+    <div class="box"><div class="in legend" id="legend"></div></div>
+  </div>`;
+  $("#back").onclick = () => { location.hash = ""; };
+  map = createMap("mmap");
+  const groups = [];
+  const bounds = L.latLngBounds([]);
+  rows.forEach((r, i) => {
+    const color = COLORS[i % COLORS.length];
+    const pts = decodeTrack(r.track, new Date(r.start_at).getTime());
+    const g = L.layerGroup();
+    if (pts.length >= 2) {
+      const ll = pts.map((p) => [p.lat, p.lon]);
+      L.polyline(ll, { color: "#000", weight: 7, opacity: .6 }).addTo(g);
+      const line = L.polyline(ll, { color, weight: 4 })
+        .bindTooltip(esc(r.name) + " · " + esc(nameOf(r.user_id)) + " · " + esc(dt(r.start_at)), { sticky: true }).addTo(g);
+      L.circleMarker(ll[0], { radius: 7, color: "#000", weight: 2, fillColor: color, fillOpacity: 1 }).bindTooltip("Start: " + esc(r.name)).addTo(g);
+      g.bounds = line.getBounds();
+      bounds.extend(g.bounds);
+    }
+    g.addTo(map);
+    groups.push({ r, g, color, has: pts.length >= 2 });
+  });
+  $("#legend").innerHTML = groups.map((x, i) => `
+    <div class="leg" data-i="${i}">
+      <input type="checkbox" checked data-toggle="${i}">
+      <span class="sw" style="background:${x.color}"></span>
+      <span class="t">${esc(x.r.name)}<small>${esc(nameOf(x.r.user_id))} · ${esc(dt(x.r.start_at))} · ${km(x.r.distance_m)} km · ${hms(x.r.total_ms)}${x.has ? "" : " · bez trasy"}</small></span>
+    </div>`).join("") || `<div class="hint">Žádná z vybraných jízd nemá trasu.</div>`;
+  app.querySelectorAll("[data-toggle]").forEach((cb) => cb.onchange = () => {
+    const x = groups[+cb.dataset.toggle];
+    if (cb.checked) x.g.addTo(map); else map.removeLayer(x.g);
+  });
+  app.querySelectorAll(".leg").forEach((el) => el.onclick = (e) => {
+    if (e.target.matches("input")) return;
+    const x = groups[+el.dataset.i];
+    if (x.g.bounds) map.fitBounds(x.g.bounds, { padding: [30, 30] });
+  });
+  const fitAll = () => { if (bounds.isValid()) map.fitBounds(bounds, { padding: [30, 30] }); else map.setView([49.8, 15.5], 7); };
+  $("#fitAll").onclick = fitAll;
+  fitAll();
+}
+
+const fileBase = (r) => (r.name || "rally").normalize("NFD").replace(/\p{M}+/gu, "").replace(/[^A-Za-z0-9_-]+/g, "_").slice(0, 40);
+function toGpx(r, pts) {
+  const x = (s) => esc(s);
+  let segs = "", cur = null;
+  for (const p of pts) {
+    if (p.sec !== cur) { if (cur !== null) segs += "    </trkseg>\n"; segs += "    <trkseg>\n"; cur = p.sec; }
+    segs += `      <trkpt lat="${p.lat.toFixed(6)}" lon="${p.lon.toFixed(6)}"><time>${new Date(p.t).toISOString()}</time></trkpt>\n`;
+  }
+  if (cur !== null) segs += "    </trkseg>\n";
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="RC-90" xmlns="http://www.topografix.com/GPX/1/1">\n  <trk><name>${x(r.name)}</name>\n${segs}  </trk>\n</gpx>\n`;
+}
+function toCsv(pts) {
+  return "timestamp,latitude,longitude,speed_kmh,elapsed_time,elapsed_ms,section\n" +
+    pts.map((p) => [new Date(p.t).toISOString(), p.lat.toFixed(6), p.lon.toFixed(6), p.kmh.toFixed(1), hms(p.ms, true), p.ms, p.sec].join(",")).join("\n") + "\n";
+}
+function download(name, text, type) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([text], { type }));
+  a.download = name; document.body.appendChild(a); a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+}
+function showError(e) {
+  if (e.message === "PŘIHLAS SE ZNOVU") { logout(); return; }
+  app.innerHTML = `<div class="err" style="margin:30px 0">${esc(e.message === "Failed to fetch" ? "BEZ INTERNETU / ŠPATNÁ ADRESA PROJEKTU" : e.message)}</div><button onclick="location.reload()">Zkusit znovu</button>`;
+}
+
+$("#btnLogout").onclick = logout;
+$("#btnProject").onclick = () => { if (map) { map.remove(); map = null; } renderProject(); };
+window.addEventListener("hashchange", render);
+render();
+</script>
+</body>
+</html>
