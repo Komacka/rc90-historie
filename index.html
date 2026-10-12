@@ -1473,10 +1473,34 @@ tr.sel { background: #1c1810; }
 .leaflet-bar a { background: var(--btn) !important; color: var(--digit) !important; border-color: var(--bezel-l) !important; }
 .multi { display: grid; grid-template-columns: 1fr 320px; gap: 12px; }
 .multi > .box > .in { height: 100%; }
+
+.garage { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
+.gcar.cur { outline: 3px solid var(--amber, #f2a01e); }
+.gcar .gname { font-size: 24px; font-weight: 700; letter-spacing: 1px; }
+.gcar .gimg { background: radial-gradient(ellipse at 50% 45%, #f6f8fb 0%, #dfe5ec 100%); margin: 8px 0; aspect-ratio: 420 / 266; }
+.gcar .gimg img { width: 100%; display: block; }
+.gbtns { display: flex; gap: 8px; align-items: center; justify-content: flex-end; }
+.gcur { color: var(--amber, #f2a01e); font-weight: 700; letter-spacing: 1px; margin-right: auto; }
+.cedit { display: grid; grid-template-columns: 1.1fr 1fr; gap: 20px; }
+@media (max-width: 900px) { .cedit { grid-template-columns: 1fr; } }
+.cgrid { display: grid; gap: 8px; margin-top: 6px; }
+.cgrid.c4 { grid-template-columns: repeat(4, 1fr); }
+.cgrid.c5 { grid-template-columns: repeat(5, 1fr); }
+.copt { background: radial-gradient(ellipse at 50% 45%, #f6f8fb 0%, #dfe5ec 100%); border: 2px solid #444; cursor: pointer; text-align: center; padding-bottom: 4px; }
+.copt.sel { border-color: var(--amber, #f2a01e); box-shadow: 0 0 0 2px var(--amber, #f2a01e); }
+.copt img { width: 100%; display: block; aspect-ratio: 420 / 266; }
+.copt span { display: block; color: #222; font-size: 13px; font-weight: 600; letter-spacing: .5px; padding: 0 2px; }
+.cbig { position: relative; background: radial-gradient(ellipse at 50% 45%, #f6f8fb 0%, #dfe5ec 100%); }
+.cbig img { width: 100%; display: block; aspect-ratio: 420 / 266; }
+.ccap { position: absolute; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,.55); color: #fff; text-align: center; font-size: 15px; letter-spacing: 1px; padding: 2px; }
+.sw { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+.swc { min-width: 46px; height: 38px; flex: 1; border: 1px solid #000; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; }
+.swc.sel { outline: 3px solid var(--amber, #f2a01e); }
+button.danger { border-color: #c8102e; }
 .carcell { display: inline-flex; align-items: center; gap: 6px; }
 .carcell svg { flex: none; }
 .carmk { background: none; border: none; }
-.carmk .halo { position: absolute; left: 50%; top: 50%; width: 52px; height: 52px; margin: -26px 0 0 -26px; border-radius: 50%; opacity: .45; border: 2px solid #000; }
+.carmk .halo { position: absolute; left: 50%; top: 50%; width: 64px; height: 64px; margin: -32px 0 0 -32px; border-radius: 50%; opacity: .45; border: 2px solid #000; }
 .carmk svg { position: relative; }
 .leaflet-tooltip { background: #111 !important; color: #f4f4ec !important; border: 1px solid #555 !important; border-radius: 0 !important; font-family: "Barlow Condensed", sans-serif; font-size: 16px; box-shadow: none !important; }
 .leaflet-tooltip-right::before, .leaflet-tooltip-left::before { display: none; }
@@ -1525,6 +1549,7 @@ let session = store.get("session");
 let profiles = {};
 let ralliesCache = null;
 let teamCars = null, teamCarsWall = 0;
+let currentCarSupported = false, profilesWall = 0;
 let map = null;
 let liveTimer = null;
 const selected = new Set(store.get("selected") || []);
@@ -1621,6 +1646,8 @@ function render() {
   if (!session) return renderLogin();
   const h = location.hash.replace(/^#/, "");
   if (h === "live") return renderLive();
+  if (h === "garaz") return renderGarage();
+  if (h.startsWith("auto/")) return renderCarEdit(decodeURIComponent(h.slice(5)));
   if (h.startsWith("m/")) return renderMulti(h.slice(2).split(",").map(decodeURIComponent).filter(Boolean));
   if (h.startsWith("j/")) return renderDetail(decodeURIComponent(h.slice(2)));
   if (h) return renderDetail(decodeURIComponent(h));
@@ -1670,7 +1697,9 @@ function renderLogin() {
 }
 
 async function loadProfiles() {
-  const rows = await api("/rest/v1/profiles?select=id,username,color");
+  let rows;
+  try { rows = await api("/rest/v1/profiles?select=id,username,color,current_car"); currentCarSupported = true; }
+  catch (e) { if (e.status !== 400) throw e; rows = await api("/rest/v1/profiles?select=id,username,color"); currentCarSupported = false; }
   profiles = {}; (rows || []).forEach((p) => profiles[p.id] = p);
 }
 async function loadRallies(force) {
@@ -1845,6 +1874,7 @@ async function renderList() {
     ${carNames.length ? `<select id="carFlt"><option value="">Všechna auta</option>${carNames.map((c) => `<option>${esc(c)}</option>`).join("")}</select>` : ""}
     <button id="reload">Obnovit</button>
     <button id="live" class="go">Živá mapa týmu</button>
+    <button id="garage">Moje auta</button>
     <button id="multi" class="warn" ${selected.size ? "" : "disabled"}>Vybrané na mapě (${selected.size})</button>
     ${selected.size ? `<button id="clearSel">Zrušit výběr</button>` : ""}
     <span class="grow" style="flex:1"></span>
@@ -1874,6 +1904,7 @@ async function renderList() {
   if ($("#carFlt")) { $("#carFlt").value = carFilter; $("#carFlt").onchange = (e) => { store.set("carFilter", e.target.value); renderList(); }; }
   $("#reload").onclick = async () => { ralliesCache = null; renderList(); };
   $("#live").onclick = () => { location.hash = "live"; };
+  $("#garage").onclick = () => { location.hash = "garaz"; };
   app.querySelectorAll("tbody tr").forEach((tr) => tr.onclick = (e) => {
     if (e.target.closest("td.ck")) return;
     location.hash = "j/" + encodeURIComponent(tr.dataset.id);
@@ -1917,6 +1948,7 @@ async function renderDetail(id) {
     <button id="back">← Zpět</button>
     <span style="flex:1"></span>
     <button id="pick" class="${selected.has(r.id) ? "warn" : ""}">${selected.has(r.id) ? "Ve výběru pro mapu ✓" : "Přidat do výběru pro mapu"}</button>
+    ${session && r.user_id === session.user_id ? `<button id="rename">Přejmenovat</button><button id="del" class="danger">Smazat</button>` : ""}
     <button id="gpx" ${pts.length ? "" : "disabled"}>GPX</button>
     <button id="csv" ${pts.length ? "" : "disabled"}>CSV</button>
   </div>
@@ -1951,6 +1983,21 @@ async function renderDetail(id) {
   $("#csv").onclick = () => download(fileBase(r) + ".csv", toCsv(pts), "text/csv");
   drawMap(pts);
   if (session && r.user_id === session.user_id) carEditor(r);
+  if ($("#rename")) $("#rename").onclick = async () => {
+    const n = prompt("Nový název jízdy:", r.name);
+    if (n == null || !n.trim() || n.trim() === r.name) return;
+    try {
+      await api("/rest/v1/rallies?id=eq." + encodeURIComponent(r.id), { method: "PATCH", body: { name: n.trim().slice(0, 60), updated_at: new Date().toISOString() }, headers: { Prefer: "return=minimal" } });
+      ralliesCache = null; renderDetail(r.id);
+    } catch (e) { alert("Chyba: " + e.message); }
+  };
+  if ($("#del")) $("#del").onclick = async () => {
+    if (prompt("Jízda se smaže v cloudu i ve všech zařízeních.\nPro potvrzení napiš SMAZAT:") !== "SMAZAT") return;
+    try {
+      await api("/rest/v1/rallies?id=eq." + encodeURIComponent(r.id), { method: "DELETE", headers: { Prefer: "return=minimal" } });
+      selected.delete(r.id); saveSel(); ralliesCache = null; location.hash = "";
+    } catch (e) { alert("Chyba: " + e.message); }
+  };
 }
 
 /** Zpětná změna auta u vlastní jízdy – propíše se do aplikace na všech zařízeních. */
@@ -1990,6 +2037,187 @@ async function carEditor(r) {
       const h = $("#hdrCar"); if (h) h.textContent = r.car_name ? " · " + r.car_name : "";
     } catch (e) { $("#carMsg").textContent = "Chyba: " + e.message; $("#carSave").disabled = false; }
   };
+}
+
+// ---------------------------------------------------------------------------
+// Garáž na webu – stejná auta jako v aplikaci; změna se propíše do aplikace,
+// do všech jízd s tímto autem i na živou mapu.
+// ---------------------------------------------------------------------------
+const CAT = {"wheels":[["star","5 paprsků"],["mesh","Síť"],["multi","Vícepaprsek"],["dish","Ocelový"]],"wheelColors":[["stříbrná","#C9CDD2"],["bílá","#F6F6F6"],["zlatá","#D9B44A"],["antracit","#4A4D52"],["černá","#1D1D1F"]],"palette":[["ČERVENÁ","#C8102E"],["BÍLÁ","#F2F2F2"],["ČERNÁ","#151515"],["STŘÍBRNÁ","#A8ADB3"],["MODRÁ","#1F4FA8"],["TM. MODRÁ","#13234A"],["ŽLUTÁ","#F2C200"],["ZELENÁ","#1E7A3A"],["ORANŽOVÁ","#E8641B"],["VÍNOVÁ","#6B1525"]],"factory":{"sierra":[["ČERVENÁ","#B3121F"],["BÍLÁ","#F0F0EC"],["ČERNÁ","#121212"]],"fiesta":[["BÍLÁ","#F2F2EE"],["ČERVENÁ","#C0161F"],["ČERNÁ","#151515"]],"e34":[["ČERNÁ","#101012"],["STŘÍBRNÁ","#A9ADB2"],["TM. MODRÁ","#1B2A4A"]],"mx5":[["ČERVENÁ","#C8102E"],["BÍLÁ","#F2F2EE"],["MODRÁ","#1E3F8C"]],"c2":[["ČERNÁ","#151515"],["ČERVENÁ","#B8121C"],["STŘÍBRNÁ","#A8ADB3"]],"fulvia":[["ČERVENÁ","#A8111A"],["BÍLÁ","#EDE8DC"],["MODRÁ","#22427A"]],"lada":[["BÍLÁ","#EEEEE6"],["ČERVENÁ","#A51A1A"],["BÉŽOVÁ","#D8C89A"]],"favorit":[["ČERVENÁ","#C0141C"],["BÍLÁ","#EDEDE6"],["MODRÁ","#1F4F9A"]],"s130rs":[["BÍLÁ","#F2F2EE"],["ČERVENÁ","#B8121C"],["ŽLUTÁ","#F2C200"]],"golf2":[["ČERVENÁ","#B8101A"],["ČERNÁ","#141518"],["BÍLÁ","#F0F0EC"]],"delta":[["ČERVENÁ","#B3121F"],["BÍLÁ","#F2F2EE"],["ČERNÁ","#141518"]]},"models":[{"id":"sierra","name":"FORD SIERRA RS COSWORTH","dims":"4 459 × 1 728 × 1 376 mm · rozvor 2 608","liveries":[{"key":"f","name":"TOVÁRNÍ","era":"sériová barva","body":"#B3121F","accent":"#FFFFFF","wheel":"multi","wheelColor":0},{"key":"1","name":"BÍLO-ČERVENÝ","era":"styl Gr. A 1987","body":"#F3F3EF","accent":"#D3121F","wheel":"multi","wheelColor":1},{"key":"2","name":"MODRO-ORANŽOVÝ","era":"styl Gr. A 1991","body":"#14306B","accent":"#F28A1A","wheel":"star","wheelColor":2},{"key":"3","name":"BÍLO-MODRÝ","era":"styl cestovní vozy 1988","body":"#F3F3EF","accent":"#13306B","wheel":"multi","wheelColor":1},{"key":"4","name":"BÍLO-MODRÝ WORKS","era":"styl Gr. A 1990–91","body":"#F3F3EF","accent":"#1C3F94","wheel":"star","wheelColor":1}]},{"id":"fiesta","name":"FORD FIESTA XR2i (Mk3)","dims":"3 804 × 1 639 × 1 326 mm · rozvor 2 450","liveries":[{"key":"f","name":"TOVÁRNÍ","era":"sériová barva","body":"#F1F1EC","accent":"#FFFFFF","wheel":"dish","wheelColor":0},{"key":"1","name":"TRIKOLÓRA","era":"styl Gr. N 1990","body":"#F3F3EF","accent":"#36A3E0","wheel":"multi","wheelColor":1},{"key":"2","name":"ŽLUTO-ČERNÝ","era":"styl Gr. A 1992","body":"#F6C400","accent":"#121315","wheel":"multi","wheelColor":4},{"key":"3","name":"MODRO-ŽLUTÝ","era":"styl Gr. N 1991","body":"#1B3A8C","accent":"#F7C900","wheel":"multi","wheelColor":1},{"key":"4","name":"ŠACHOVNICE","era":"styl pohár 1990","body":"#F3F3EF","accent":"#121315","wheel":"multi","wheelColor":4}]},{"id":"e34","name":"BMW M5 (E34)","dims":"4 720 × 1 751 × 1 392 mm · rozvor 2 761","liveries":[{"key":"f","name":"TOVÁRNÍ","era":"sériová barva","body":"#17181B","accent":"#FFFFFF","wheel":"star","wheelColor":0},{"key":"1","name":"MOTORSPORT","era":"styl cestovní vozy 1990","body":"#F3F3EF","accent":"#4FA6DB","wheel":"multi","wheelColor":1},{"key":"2","name":"MODRO-BÍLÝ","era":"styl Gr. A 1988","body":"#F3F3EF","accent":"#102A5C","wheel":"multi","wheelColor":1},{"key":"3","name":"ORANŽOVÝ","era":"styl cestovní vozy 1991","body":"#F07A1A","accent":"#121315","wheel":"multi","wheelColor":1},{"key":"4","name":"STŘÍBRNO-MODRÝ","era":"styl 1989","body":"#C9CDD2","accent":"#123E8C","wheel":"star","wheelColor":0}]},{"id":"mx5","name":"MAZDA MX-5 (NA)","dims":"3 975 × 1 675 × 1 230 mm · rozvor 2 265","liveries":[{"key":"f","name":"TOVÁRNÍ","era":"sériová barva","body":"#C3101C","accent":"#FFFFFF","wheel":"multi","wheelColor":0},{"key":"1","name":"ORANŽOVO-ZELENÝ","era":"styl Le Mans 1991","body":"#F58220","accent":"#00A04F","wheel":"star","wheelColor":1},{"key":"2","name":"BÍLO-MODRÝ","era":"styl klubové závody 1995","body":"#F3F3EF","accent":"#1F4FA2","wheel":"multi","wheelColor":3},{"key":"3","name":"ŽLUTO-ČERNÝ","era":"styl klubový pohár 1993","body":"#F6C400","accent":"#121315","wheel":"multi","wheelColor":4},{"key":"4","name":"ZELENÝ S KRÉMOVOU","era":"styl klasické závody","body":"#0F4D2E","accent":"#EFE6C8","wheel":"dish","wheelColor":0}]},{"id":"c2","name":"CITROËN C2 VTS","dims":"3 666 × 1 659 × 1 474 mm · rozvor 2 315","liveries":[{"key":"f","name":"TOVÁRNÍ","era":"sériová barva","body":"#B4121B","accent":"#FFFFFF","wheel":"multi","wheelColor":0},{"key":"1","name":"ČERVENO-BÍLÝ","era":"styl S1600 2004","body":"#D5121B","accent":"#F3F3EF","wheel":"star","wheelColor":1},{"key":"2","name":"TRIKOLÓRA","era":"styl WRC 2007","body":"#F3F3EF","accent":"#0055A4","wheel":"multi","wheelColor":1},{"key":"3","name":"ČERNO-ŽLUTÝ","era":"styl Junior 2005","body":"#121315","accent":"#F7C900","wheel":"multi","wheelColor":2},{"key":"4","name":"BÍLO-ZELENÝ","era":"styl R2 2008","body":"#F3F3EF","accent":"#2F9E44","wheel":"star","wheelColor":1}]},{"id":"fulvia","name":"LANCIA FULVIA COUPÉ HF","dims":"3 975 × 1 555 × 1 300 mm · rozvor 2 330","liveries":[{"key":"f","name":"TOVÁRNÍ","era":"sériová barva","body":"#A50F15","accent":"#FFFFFF","wheel":"dish","wheelColor":0},{"key":"1","name":"HF WORKS","era":"styl Monte Carlo 1972","body":"#B0121A","accent":"#151515","wheel":"dish","wheelColor":0},{"key":"2","name":"BÍLO-ČERVENÁ ŠIPKA","era":"styl 1974","body":"#F3F3EF","accent":"#D3121F","wheel":"star","wheelColor":1},{"key":"3","name":"MODRÁ S PRUHEM","era":"styl 1969","body":"#1E3F7A","accent":"#F3F3EF","wheel":"dish","wheelColor":0},{"key":"4","name":"TRIKOLÓRA","era":"styl 1971","body":"#F3F3EF","accent":"#C8102E","wheel":"dish","wheelColor":0}]},{"id":"lada","name":"LADA 2105 (ŽIGULI)","dims":"4 130 × 1 620 × 1 446 mm · rozvor 2 424","liveries":[{"key":"f","name":"TOVÁRNÍ","era":"sériová barva","body":"#EDEDE4","accent":"#FFFFFF","wheel":"dish","wheelColor":0},{"key":"1","name":"ČERVENO-MODRÝ","era":"styl Gr. B 1983","body":"#F3F3EF","accent":"#D3121F","wheel":"dish","wheelColor":1},{"key":"2","name":"ORANŽOVO-ČERNÝ","era":"styl Gr. A 1986","body":"#EE7A1B","accent":"#121315","wheel":"dish","wheelColor":4},{"key":"3","name":"ŽLUTO-MODRÝ","era":"styl 1985","body":"#F6C400","accent":"#1F4FA2","wheel":"dish","wheelColor":1},{"key":"4","name":"BÍLO-ZELENÝ","era":"styl 1980","body":"#F3F3EF","accent":"#0B6B3A","wheel":"dish","wheelColor":1}]},{"id":"favorit","name":"ŠKODA FAVORIT 136 L","dims":"3 815 × 1 620 × 1 415 mm · rozvor 2 450","liveries":[{"key":"f","name":"TOVÁRNÍ","era":"sériová barva","body":"#C0141C","accent":"#FFFFFF","wheel":"dish","wheelColor":0},{"key":"1","name":"BÍLO-ZELENÝ","era":"styl Gr. A 1991","body":"#F3F3EF","accent":"#3E9B35","wheel":"multi","wheelColor":1},{"key":"2","name":"ČERVENO-BÍLÝ","era":"styl Gr. A 1993","body":"#D3121F","accent":"#F3F3EF","wheel":"star","wheelColor":1},{"key":"3","name":"ŽLUTO-ČERNÝ","era":"styl 1994","body":"#F6C400","accent":"#121315","wheel":"multi","wheelColor":4},{"key":"4","name":"BÍLO-MODRÝ","era":"styl 1992","body":"#F3F3EF","accent":"#1F4FA2","wheel":"multi","wheelColor":1}]},{"id":"s130rs","name":"ŠKODA 130 RS","dims":"4 020 × 1 670 × 1 340 mm · rozvor 2 400","liveries":[{"key":"f","name":"TOVÁRNÍ","era":"sériová barva","body":"#F2F2EE","accent":"#FFFFFF","wheel":"dish","wheelColor":0},{"key":"1","name":"WORKS ČERVENÁ","era":"styl Monte Carlo 1977","body":"#F2F2EE","accent":"#C8102E","wheel":"star","wheelColor":0},{"key":"2","name":"ŽLUTO-ZELENÝ","era":"styl 1981","body":"#F5C518","accent":"#1A6B34","wheel":"dish","wheelColor":4},{"key":"3","name":"BÍLÝ S MODROU","era":"styl 1976","body":"#F3F3EF","accent":"#1F4FA2","wheel":"star","wheelColor":0},{"key":"4","name":"ORANŽOVO-BÍLÝ","era":"styl 1979","body":"#EE7A1B","accent":"#F3F3EF","wheel":"dish","wheelColor":1}]},{"id":"golf2","name":"VW GOLF II GTI","dims":"4 040 × 1 680 × 1 405 mm · rozvor 2 475","liveries":[{"key":"f","name":"TOVÁRNÍ","era":"sériová barva","body":"#B8101A","accent":"#FFFFFF","wheel":"multi","wheelColor":0},{"key":"1","name":"BÍLO-MODRO-ČERVENÝ","era":"styl Gr. A 1987","body":"#F3F3EF","accent":"#13306B","wheel":"multi","wheelColor":1},{"key":"2","name":"ČERNO-ČERVENÝ","era":"styl GTI Cup 1989","body":"#141518","accent":"#D3121F","wheel":"multi","wheelColor":0},{"key":"3","name":"ŽLUTO-MODRÝ","era":"styl Gr. A 1989","body":"#F6C400","accent":"#13306B","wheel":"multi","wheelColor":1},{"key":"4","name":"BÍLO-ZELENÝ","era":"styl 1986","body":"#F3F3EF","accent":"#0B6B3A","wheel":"multi","wheelColor":4}]},{"id":"delta","name":"LANCIA DELTA HF INTEGRALE EVO","dims":"3 898 × 1 767 × 1 365 mm · rozvor 2 479","liveries":[{"key":"f","name":"TOVÁRNÍ","era":"sériová barva","body":"#B3121F","accent":"#FFFFFF","wheel":"multi","wheelColor":0},{"key":"1","name":"BÍLÝ S PRUHY","era":"styl Gr. A 1992","body":"#F3F3EF","accent":"#5BB1E3","wheel":"multi","wheelColor":1},{"key":"2","name":"MODRO-ŽLUTÝ","era":"styl Gr. A 1993","body":"#1D3E8C","accent":"#F7C900","wheel":"star","wheelColor":1},{"key":"3","name":"ČERVENO-BÍLÝ","era":"styl Gr. A 1987","body":"#F3F3EF","accent":"#D3121F","wheel":"multi","wheelColor":1},{"key":"4","name":"BÍLO-TYRKYSOVÝ","era":"styl Gr. A 1990","body":"#F3F3EF","accent":"#0F8C8C","wheel":"star","wheelColor":1}]}]};
+const LIV_KEYS = ["f", "1", "2", "3", "4"];
+const catModel = (id) => CAT.models.find((m) => m.id === id);
+const hexLum = (h) => { const v = parseInt(String(h).replace("#", ""), 16); return 0.299 * (v >> 16 & 255) + 0.587 * (v >> 8 & 255) + 0.114 * (v & 255); };
+const contrastHex = (h) => hexLum(h) < 140 ? "#FFFFFF" : "#111111";
+function decStyle(str) {
+  const p = String(str || "").split(";");
+  const lv = LIV_KEYS.includes(p[1]) ? p[1] : (["stripes", "rally", "twotone"].includes(p[1]) ? "1" : "f");
+  return { model: catModel(p[0]) ? p[0] : "sierra", livery: lv, number: String(p[3] || "").replace(/\D/g, "").slice(0, 3), wheel: CAT.wheels.some((w) => w[0] === p[4]) ? p[4] : "", wheelColor: p[5] === undefined || p[5] === "" || isNaN(+p[5]) ? -1 : +p[5] };
+}
+function encStyle(st, color) {
+  const m = catModel(st.model), l = m && m.liveries.find((x) => x.key === st.livery);
+  const accent = st.livery === "f" || !l ? contrastHex(color) : l.accent;
+  return [st.model, st.livery, accent.toUpperCase(), st.number || "", st.wheel || "", st.wheelColor >= 0 ? String(st.wheelColor) : ""].join(";");
+}
+const uuid = () => (crypto.randomUUID ? crypto.randomUUID() : "10000000-1000-4000-8000-100000000000".replace(/[018]/g, (c) => (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16)));
+let myCars = null;
+async function loadMyCars(force) {
+  if (myCars && !force) return myCars;
+  myCars = await api("/rest/v1/cars?select=id,name,body,color,archived,updated_at&user_id=eq." + encodeURIComponent(session.user_id) + "&order=name.asc");
+  return myCars;
+}
+/** Obrázky aut se kreslí postupně, aby stránka hned reagovala. */
+function fillCarImgs(root) {
+  const items = [...(root || document).querySelectorAll("img[data-style]")];
+  const next = () => {
+    const el = items.shift(); if (!el) return;
+    const u = car3dUrl(el.dataset.style, el.dataset.color, el.dataset.view || "preview", +(el.dataset.px || 420));
+    if (u) el.src = u; else el.replaceWith(Object.assign(document.createElement("span"), { innerHTML: carSvg(el.dataset.style, el.dataset.color, 60, 90) }));
+    setTimeout(next, 0);
+  };
+  setTimeout(next, 0);
+}
+const carImg = (style, color, px = 420, cls = "") => `<img class="${cls}" data-style="${esc(style)}" data-color="${esc(color)}" data-px="${px}" alt="" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=">`;
+
+async function setCurrentCar(id) {
+  await api("/rest/v1/profiles?id=eq." + encodeURIComponent(session.user_id), { method: "PATCH", body: { current_car: id }, headers: { Prefer: "return=minimal" } });
+  if (profiles[session.user_id]) profiles[session.user_id].current_car = id;
+}
+
+async function renderGarage() {
+  app.innerHTML = `<div class="hint">Načítám…</div>`;
+  let cars;
+  try { await loadProfiles(); cars = (await loadMyCars(true)).filter((c) => !c.archived); }
+  catch (e) {
+    if (e.status === 404 || e.status === 400) { app.innerHTML = `<button id="back">← Zpět</button><div class="hint" style="margin-top:12px">V cloudu chybí tabulka aut – spusť v Supabase skript rc90_cars.sql.</div>`; $("#back").onclick = () => { location.hash = ""; }; return; }
+    return showError(e);
+  }
+  const cur = profiles[session.user_id] && profiles[session.user_id].current_car;
+  app.innerHTML = `
+  <div class="toolbar">
+    <button id="back">← Zpět</button>
+    <span class="title" style="margin:0 8px">Moje auta</span>
+    <span style="flex:1"></span>
+    <button id="add" class="go">+ Přidat auto</button>
+  </div>
+  ${currentCarSupported ? "" : `<div class="hint" style="margin-bottom:10px">Tip: aby se i výběr „jedu s ním“ propisoval mezi zařízeními a webem, spusť v Supabase skript rc90_v23.sql.</div>`}
+  <div class="garage">
+    ${cars.map((c) => {
+      const m = catModel(decStyle(c.body).model);
+      return `<div class="box gcar ${c.id === cur ? "cur" : ""}"><div class="in">
+        <div class="gname">${esc(c.name)}</div>
+        <div class="gmodel muted">${esc(m ? m.name : "")}</div>
+        <div class="gimg">${carImg(c.body, c.color, 420)}</div>
+        <div class="gbtns">
+          ${currentCarSupported ? (c.id === cur ? `<span class="gcur">✓ JEDU S NÍM</span>` : `<button data-cur="${esc(c.id)}">Jedu s ním</button>`) : ""}
+          <button data-edit="${esc(c.id)}">Upravit</button>
+        </div></div></div>`;
+    }).join("") || `<div class="hint">Zatím žádné auto. Přidej ho tady nebo v aplikaci (TÝM → AUTO).</div>`}
+  </div>
+  ${currentCarSupported && cur ? `<div style="margin-top:12px"><button id="noCar">Jedu bez auta</button></div>` : ""}`;
+  $("#back").onclick = () => { location.hash = ""; };
+  $("#add").onclick = () => { location.hash = "auto/new"; };
+  app.querySelectorAll("[data-edit]").forEach((b) => b.onclick = () => { location.hash = "auto/" + encodeURIComponent(b.dataset.edit); });
+  app.querySelectorAll("[data-cur]").forEach((b) => b.onclick = async () => { try { await setCurrentCar(b.dataset.cur); renderGarage(); } catch (e) { alert("Chyba: " + e.message); } });
+  if ($("#noCar")) $("#noCar").onclick = async () => { try { await setCurrentCar(null); renderGarage(); } catch (e) { alert("Chyba: " + e.message); } };
+  fillCarImgs(app);
+}
+
+async function renderCarEdit(id) {
+  app.innerHTML = `<div class="hint">Načítám…</div>`;
+  let cars;
+  try { cars = await loadMyCars(true); } catch (e) { return showError(e); }
+  const car = id === "new" ? null : cars.find((c) => c.id === id);
+  if (id !== "new" && !car) { location.hash = "garaz"; return; }
+  const st = car ? decStyle(car.body) : { model: "sierra", livery: "f", number: "", wheel: "", wheelColor: -1 };
+  let color = car ? car.color : CAT.factory.sierra[0][1];
+  let name = car ? car.name : catModel("sierra").name;
+  let allColors = false;
+
+  const liv = () => catModel(st.model).liveries.find((l) => l.key === st.livery) || catModel(st.model).liveries[0];
+  const bodyColor = () => st.livery === "f" ? color : liv().body;
+  const effWheel = () => st.wheel || liv().wheel;
+  const effWc = () => st.wheelColor >= 0 ? st.wheelColor : liv().wheelColor;
+
+  function draw() {
+    const m = catModel(st.model), l = liv();
+    const pal = allColors ? CAT.palette : (CAT.factory[st.model] || CAT.palette);
+    app.innerHTML = `
+    <div class="toolbar">
+      <button id="back">← Moje auta</button>
+      <span class="title" style="margin:0 8px">${car ? "Upravit auto" : "Nové auto"}</span>
+      <span style="flex:1"></span>
+      ${car ? `<button id="del" class="danger">Smazat auto</button>` : ""}
+      <button id="save" class="go">Uložit</button>
+    </div>
+    <div class="cedit">
+      <div>
+        <div class="lbl">Název</div>
+        <input id="cName" maxlength="30" value="${esc(name)}" style="width:100%;margin:4px 0 14px">
+        <div class="lbl">Model</div>
+        <div class="cgrid c4">${CAT.models.map((mm) => `<div class="copt ${mm.id === st.model ? "sel" : ""}" data-model="${mm.id}">${carImg(encStyle({ model: mm.id, livery: "f", number: "", wheel: "", wheelColor: -1 }, CAT.factory[mm.id][0][1]), CAT.factory[mm.id][0][1], 420)}<span>${esc(mm.name)}</span></div>`).join("")}</div>
+      </div>
+      <div>
+        <div class="cbig">${carImg(encStyle(st, color), bodyColor(), 900, "big")}<div class="ccap">${esc(l.name)} · ${esc(l.era)}</div></div>
+        <div class="lbl" style="margin-top:12px">Polep</div>
+        <div class="cgrid c5">${m.liveries.map((x) => `<div class="copt ${x.key === st.livery ? "sel" : ""}" data-liv="${x.key}">${carImg(encStyle({ model: st.model, livery: x.key, number: "", wheel: "", wheelColor: -1 }, x.key === "f" ? color : x.body), x.key === "f" ? color : x.body, 420)}<span>${x.key === "f" ? "Tovární" : "Polep " + x.key}</span></div>`).join("")}</div>
+        ${st.livery === "f" ? `<div class="lbl" style="margin-top:12px">Barva <a href="#" id="moreCol" style="margin-left:10px">${allColors ? "jen dobové" : "další barvy"}</a></div>
+        <div class="sw">${pal.map(([n, c]) => `<div class="swc ${c.toUpperCase() === String(color).toUpperCase() ? "sel" : ""}" data-col="${c}" title="${esc(n)}" style="background:${c}">${allColors ? "" : `<span style="color:${contrastHex(c)}">${esc(n)}</span>`}</div>`).join("")}</div>` : ""}
+        <div class="lbl" style="margin-top:12px">Kola</div>
+        <div class="toolbar" style="margin:4px 0">${CAT.wheels.map(([k, n]) => `<button data-wheel="${k}" class="${effWheel() === k ? "warn" : ""}">${esc(n)}</button>`).join("")}</div>
+        <div class="sw">${CAT.wheelColors.map(([n, c], i) => `<div class="swc ${effWc() === i ? "sel" : ""}" data-wc="${i}" title="${esc(n)}" style="background:${c}"></div>`).join("")}</div>
+        <div class="lbl" style="margin-top:12px">Startovní číslo</div>
+        <input id="cNum" inputmode="numeric" maxlength="3" value="${esc(st.number)}" style="width:90px;margin-top:4px">
+        <div id="cMsg" class="muted" style="margin-top:10px"></div>
+      </div>
+    </div>`;
+    $("#back").onclick = () => { location.hash = "garaz"; };
+    $("#cName").oninput = (e) => { name = e.target.value; };
+    $("#cNum").onchange = (e) => { st.number = e.target.value.replace(/\D/g, "").slice(0, 3); draw(); };
+    app.querySelectorAll("[data-model]").forEach((el) => el.onclick = () => {
+      if (el.dataset.model === st.model) return;
+      const wasDefault = !name.trim() || name === catModel(st.model).name;
+      st.model = el.dataset.model; st.livery = "f"; st.wheel = ""; st.wheelColor = -1; allColors = false;
+      color = CAT.factory[st.model][0][1];
+      if (wasDefault) name = catModel(st.model).name;
+      draw();
+    });
+    app.querySelectorAll("[data-liv]").forEach((el) => el.onclick = () => { st.livery = el.dataset.liv; st.wheel = ""; st.wheelColor = -1; draw(); });
+    app.querySelectorAll("[data-col]").forEach((el) => el.onclick = () => { color = el.dataset.col; draw(); });
+    app.querySelectorAll("[data-wheel]").forEach((el) => el.onclick = () => { st.wheel = el.dataset.wheel; draw(); });
+    app.querySelectorAll("[data-wc]").forEach((el) => el.onclick = () => { st.wheelColor = +el.dataset.wc; draw(); });
+    if ($("#moreCol")) $("#moreCol").onclick = (e) => { e.preventDefault(); allColors = !allColors; draw(); };
+    $("#save").onclick = save;
+    if ($("#del")) $("#del").onclick = async () => {
+      if (!confirm("Smazat auto „" + car.name + "“? Jízdy s ním zůstanou.")) return;
+      try {
+        await api("/rest/v1/cars?id=eq." + encodeURIComponent(car.id), { method: "PATCH", body: { archived: true }, headers: { Prefer: "return=minimal" } });
+        if (profiles[session.user_id] && profiles[session.user_id].current_car === car.id && currentCarSupported) await setCurrentCar(null);
+        location.hash = "garaz";
+      } catch (e) { alert("Chyba: " + e.message); }
+    };
+    fillCarImgs(app);
+  }
+
+  async function save() {
+    const nm = (name || "").trim().replace(/\s+/g, " ").slice(0, 30) || "AUTO";
+    const body = encStyle(st, color), col = String(bodyColor()).toUpperCase();
+    $("#save").disabled = true; $("#cMsg").textContent = "Ukládám…";
+    try {
+      if (car) {
+        await api("/rest/v1/cars?id=eq." + encodeURIComponent(car.id), { method: "PATCH", body: { name: nm, body, color: col }, headers: { Prefer: "return=minimal" } });
+        // kopie auta ve všech jízdách (seznam, detail, filtr)
+        await api("/rest/v1/rallies?user_id=eq." + encodeURIComponent(session.user_id) + "&car_id=eq." + encodeURIComponent(car.id),
+          { method: "PATCH", body: { car_name: nm, car_body: body, car_color: col }, headers: { Prefer: "return=minimal" } });
+      } else {
+        const nid = uuid();
+        await api("/rest/v1/cars", { method: "POST", body: { id: nid, user_id: session.user_id, name: nm, body, color: col, archived: false }, headers: { Prefer: "return=minimal" } });
+        if (currentCarSupported) await setCurrentCar(nid);
+      }
+      ralliesCache = null;
+      location.hash = "garaz";
+    } catch (e) { $("#cMsg").textContent = "Chyba: " + e.message; $("#save").disabled = false; }
+  }
+  draw();
 }
 const tile = (l, v) => `<div class="box tile"><div class="in"><div class="lbl">${esc(l)}</div><div class="v">${esc(v)}</div></div></div>`;
 
@@ -2161,6 +2389,7 @@ async function renderLive() {
     try {
       if (!Object.keys(profiles).length) await loadProfiles();
       const since = new Date(Date.now() - MAX_AGE_MS).toISOString();
+      if (Date.now() - profilesWall > 60000) { await loadProfiles(); profilesWall = Date.now(); }
       rows = await api("/rest/v1/live_positions?select=*&updated_at=gt." + encodeURIComponent(since));
       // člen bez zadaného auta → ukázat jeho naposledy upravené auto z garáže
       if (!teamCars || Date.now() - teamCarsWall > 60000) {
@@ -2170,7 +2399,8 @@ async function renderLive() {
       }
       for (const r of rows || []) {
         if (!r.car_body) {
-          const c = (teamCars || []).find((x) => x.user_id === r.user_id);
+          const cur = profiles[r.user_id] && profiles[r.user_id].current_car;
+          const c = (teamCars || []).find((x) => x.id === cur) || (teamCars || []).find((x) => x.user_id === r.user_id);
           if (c) { r.car_body = c.body; r.car_color = c.color; r.car_name = r.car_name || c.name; }
         }
       }
