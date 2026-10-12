@@ -1597,7 +1597,7 @@ async function api(path, { method = "GET", body, auth = true, headers = {} } = {
   }
   const text = await r.text();
   let data = null; try { data = text ? JSON.parse(text) : null; } catch (e) {}
-  if (!r.ok) { const e = new Error(authMessage(r.status, data)); e.status = r.status; throw e; }
+  if (!r.ok) { const e = new Error(authMessage(r.status, data)); e.status = r.status; e.detail = data && (data.code ? data.code + " " : "") + (data && (data.message || data.msg) || ""); throw e; }
   return data;
 }
 function authMessage(status, d) {
@@ -2088,7 +2088,7 @@ async function renderGarage() {
   let cars;
   try { await loadProfiles(); cars = (await loadMyCars(true)).filter((c) => !c.archived); }
   catch (e) {
-    if (e.status === 404 || e.status === 400) { app.innerHTML = `<button id="back">← Zpět</button><div class="hint" style="margin-top:12px">V cloudu chybí tabulka aut – spusť v Supabase skript rc90_cars.sql.</div>`; $("#back").onclick = () => { location.hash = ""; }; return; }
+    if (e.status === 404 || e.status === 400) { app.innerHTML = `<button id="back">← Zpět</button><div class="hint" style="margin-top:12px">V cloudu chybí tabulka aut (chyba ${e.status}${e.detail ? " – " + esc(e.detail) : ""}).<br>Spusť v Supabase → SQL Editor celý skript <b>rc90_auta_kompletni.sql</b> a stránku obnov.</div>`; $("#back").onclick = () => { location.hash = ""; }; return; }
     return showError(e);
   }
   const cur = profiles[session.user_id] && profiles[session.user_id].current_car;
