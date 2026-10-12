@@ -1524,6 +1524,7 @@ const store = {
 let session = store.get("session");
 let profiles = {};
 let ralliesCache = null;
+let teamCars = null, teamCarsWall = 0;
 let map = null;
 let liveTimer = null;
 const selected = new Set(store.get("selected") || []);
@@ -2161,6 +2162,18 @@ async function renderLive() {
       if (!Object.keys(profiles).length) await loadProfiles();
       const since = new Date(Date.now() - MAX_AGE_MS).toISOString();
       rows = await api("/rest/v1/live_positions?select=*&updated_at=gt." + encodeURIComponent(since));
+      // člen bez zadaného auta → ukázat jeho naposledy upravené auto z garáže
+      if (!teamCars || Date.now() - teamCarsWall > 60000) {
+        try { teamCars = await api("/rest/v1/cars?select=user_id,name,body,color,archived,updated_at&archived=eq.false&order=updated_at.desc"); }
+        catch (e) { teamCars = []; }
+        teamCarsWall = Date.now();
+      }
+      for (const r of rows || []) {
+        if (!r.car_body) {
+          const c = (teamCars || []).find((x) => x.user_id === r.user_id);
+          if (c) { r.car_body = c.body; r.car_color = c.color; r.car_name = r.car_name || c.name; }
+        }
+      }
     } catch (e) {
       const info = $("#liveInfo");
       if (info) info.textContent = e.status === 404 ? " · chybí tabulka (spusť rc90_live.sql)" : " · bez spojení";
@@ -2178,7 +2191,7 @@ async function renderLive() {
       const speed = r.speed_kmh != null ? Math.round(r.speed_kmh) + " km/h" : "";
       const tip = `<b>${esc(r.name)}</b> ${esc(speed)}${r.car_name ? " · " + esc(r.car_name) : ""}${fresh ? "" : " · " + ageText(r.age)}`;
       if (r.car_body) {
-        const size = 60, box = Math.ceil(size * 1.1) + 4;
+        const size = 76, box = Math.ceil(size * 1.1) + 4;
         const html = `<div class="halo" style="background:${color}"></div>` + carTop(r.car_body, r.car_color || "#c8102e", size, r.heading || 0, !fresh);
         L.marker([r.lat, r.lon], { icon: L.divIcon({ className: "carmk", html, iconSize: [box, box], iconAnchor: [box / 2, box / 2] }) })
           .bindTooltip(tip, { permanent: true, direction: "right", offset: [box / 2 + 4, 0] })
